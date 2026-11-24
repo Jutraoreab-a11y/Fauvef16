@@ -12,10 +12,11 @@ npm run dev                  # http://localhost:3000
 
 ## Contenu
 
-- `prototype/` : interface du studio. Ses fichiers sont synchronisés vers `public/studio/` avant le démarrage et le build.
+- `prototype/` : maquette HTML historique, conservée comme référence de l'interface migrée.
 - `supabase/migrations/0001_famal_init.sql` : schéma `famal_*`, RLS et buckets. Non exécuté : à valider avant d'appliquer sur le projet Supabase partagé.
 - `src/types/famal-spec.ts` : schémas polymorphiques ApparelSpec / GearSpec et types des lignes `famal_*`.
-- `src/app/` : application Next.js (App Router), qui affiche le studio à la racine.
+- `src/app/` : application Next.js (App Router).
+- `src/components/studio/` : interface React, données produit, logique métier et scène React Three Fiber.
 - `public/models/` : fichiers `.glb` des bases 3D (à fournir).
 
 ## Limites actuelles

@@ -3,9 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "predev": "node scripts/sync-prototype.mjs",
     "dev": "next dev",
-    "prebuild": "node scripts/sync-prototype.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "tsc --noEmit"
