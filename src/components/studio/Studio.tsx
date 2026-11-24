@@ -53,7 +53,7 @@ export default function Studio() {
   const [advanced, setAdvanced] = useState(false);
   const [compare, setCompare] = useState(false);
   const [realistic, setRealistic] = useState(false);
-  const [showPattern, setShowPattern] = useState(false);
+  const [showPattern, setShowPattern] = useState(true);
   const [project, setProject] = useState('Collection Hiver');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
