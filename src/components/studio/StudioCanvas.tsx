@@ -1,8 +1,9 @@
 'use client';
 
 import { Canvas, useThree } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
+import { ContactShadows, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { useEffect, useMemo } from 'react';
 import type { WebGLRenderer } from 'three';
 import { MATERIALS } from './data';
@@ -22,6 +23,7 @@ interface StudioCanvasProps {
   view: StudioView;
   context: StudioContext;
   lightTheme: boolean;
+  realistic: boolean;
   onSelect: (id: string | null) => void;
   onRendererReady: (renderer: WebGLRenderer) => void;
 }
@@ -451,6 +453,34 @@ function CameraRig({ view }: { view: StudioView }) {
   );
 }
 
+/** Éclairage « studio photo » : environnement HDR procédural, sans téléchargement réseau. */
+function RealisticLighting({ enabled }: { enabled: boolean }) {
+  const { gl, scene } = useThree();
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+
+    const pmrem = new THREE.PMREMGenerator(gl);
+    const envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    const previousEnvironment = scene.environment;
+    const previousExposure = gl.toneMappingExposure;
+
+    scene.environment = envTexture;
+    scene.environmentIntensity = 0.6;
+    gl.toneMappingExposure = 1.1;
+
+    return () => {
+      scene.environment = previousEnvironment;
+      scene.environmentIntensity = 1;
+      gl.toneMappingExposure = previousExposure;
+      envTexture.dispose();
+      pmrem.dispose();
+    };
+  }, [enabled, gl, scene]);
+
+  return null;
+}
+
 export default function StudioCanvas({
   type,
   spec,
@@ -459,6 +489,7 @@ export default function StudioCanvas({
   view,
   context,
   lightTheme,
+  realistic,
   onSelect,
   onRendererReady,
 }: StudioCanvasProps) {
@@ -491,6 +522,10 @@ export default function StudioCanvas({
         <planeGeometry args={[12, 12]} />
         <shadowMaterial opacity={lightTheme ? 0.12 : 0.35} />
       </mesh>
+      <RealisticLighting enabled={realistic} />
+      {realistic && (
+        <ContactShadows position={[0, -1.44, 0]} opacity={0.6} scale={8} blur={2.4} far={3} />
+      )}
       <group>
         <Mannequin type={type} lightTheme={lightTheme} context={context} />
         <ProductMeshes

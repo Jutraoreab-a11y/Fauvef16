@@ -51,6 +51,7 @@ export default function Studio() {
   const [lightTheme, setLightTheme] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [compare, setCompare] = useState(false);
+  const [realistic, setRealistic] = useState(false);
   const [project, setProject] = useState('Collection Hiver');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -445,6 +446,14 @@ export default function Studio() {
             >
               Comparer avec la photo
             </button>
+            <button
+              className={realistic ? 'btn primary' : 'btn ghost'}
+              type="button"
+              aria-pressed={realistic}
+              onClick={() => setRealistic((current) => !current)}
+            >
+              {realistic ? 'Quitter la vue réelle' : 'Vue réelle'}
+            </button>
           </div>
           <div className="canvas-wrap">
             <div className="viewer-box">
@@ -456,6 +465,7 @@ export default function Studio() {
                 view={view}
                 context={context}
                 lightTheme={lightTheme}
+                realistic={realistic}
                 onSelect={setSelected}
                 onRendererReady={(value) => { renderer.current = value; }}
               />
