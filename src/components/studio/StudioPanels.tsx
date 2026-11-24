@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import type { ChangeEvent, DragEvent, FormEvent } from 'react';
 import type { HexColor, ProductType } from '@/types/famal-spec';
 import { CHIPS, MATERIALS } from './data';
+import { GARMENTS, GARMENT_CATEGORIES } from './catalogue';
 import type {
   ChatMessage,
   PipelineStepState,
@@ -115,6 +116,52 @@ function ZoneEditor({
   );
 }
 
+function GarmentPicker({ type, onTypeChange }: { type: ProductType; onTypeChange: (type: ProductType) => void }) {
+  const [garmentId, setGarmentId] = useState(() => GARMENTS.find((item) => item.base === type)?.id ?? GARMENTS[0].id);
+  const garment = GARMENTS.find((item) => item.id === garmentId) ?? GARMENTS[0];
+
+  useEffect(() => {
+    if (garment.base !== type) {
+      const match = GARMENTS.find((item) => item.base === type);
+      if (match) setGarmentId(match.id);
+    }
+  }, [type, garment.base]);
+
+  return (
+    <div className="garment-picker">
+      <p className="eyebrow">Vêtement</p>
+      <select
+        id="garmentSelect"
+        value={garment.id}
+        onChange={(event) => {
+          const next = GARMENTS.find((item) => item.id === event.currentTarget.value);
+          if (!next) return;
+          setGarmentId(next.id);
+          if (next.base) onTypeChange(next.base);
+        }}
+      >
+        {GARMENT_CATEGORIES.map((category) => (
+          <optgroup key={category.id} label={category.label}>
+            {GARMENTS.filter((item) => item.category === category.id).map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.base ? item.label : `${item.label} (à créer)`}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+      <p className="muted small">
+        {garment.base ? 'Modèle disponible dans le studio.' : 'Modèle à créer. Pièces prévues :'}
+      </p>
+      <ul className="piece-list">
+        {garment.pieces.map((piece) => (
+          <li key={piece}>{piece}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function LeftPanel({
   type,
   spec,
@@ -163,6 +210,7 @@ export function LeftPanel({
           )}
         </label>
         <p className="hint">Photo de face sur fond clair. Un croquis ou une photo de téléphone suffit.</p>
+        <GarmentPicker type={type} onTypeChange={onTypeChange} />
         <div className="seg" id="baseSeg">
           <button
             type="button"
