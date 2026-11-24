@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { WebGLRenderer } from 'three';
 import type { HexColor, ProductType } from '@/types/famal-spec';
 import { AssistantPanel, LeftPanel } from './StudioPanels';
+import PatternView from './PatternView';
 import { ASSET_SLOTS, BASES, MATERIALS } from './data';
 import { clamp, createInitialSpec, dominantColors, parseCommand, specsTableRows } from './utils';
 import type {
@@ -52,6 +53,7 @@ export default function Studio() {
   const [advanced, setAdvanced] = useState(false);
   const [compare, setCompare] = useState(false);
   const [realistic, setRealistic] = useState(false);
+  const [showPattern, setShowPattern] = useState(false);
   const [project, setProject] = useState('Collection Hiver');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -454,6 +456,14 @@ export default function Studio() {
             >
               {realistic ? 'Quitter la vue réelle' : 'Vue réelle'}
             </button>
+            <button
+              className={showPattern ? 'btn primary' : 'btn ghost'}
+              type="button"
+              aria-pressed={showPattern}
+              onClick={() => setShowPattern((current) => !current)}
+            >
+              {showPattern ? 'Masquer le patron' : 'Vue patron'}
+            </button>
           </div>
           <div className="canvas-wrap">
             <div className="viewer-box">
@@ -470,6 +480,14 @@ export default function Studio() {
                 onRendererReady={(value) => { renderer.current = value; }}
               />
             </div>
+            {showPattern && (
+              <PatternView
+                type={type}
+                spec={spec}
+                selected={selected}
+                onSelect={(id) => setSelected(id)}
+              />
+            )}
             <div className="ref-box">
               <p className="eyebrow">Photo de référence</p>
               <div className="ref-img">
