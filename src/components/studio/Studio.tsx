@@ -49,7 +49,7 @@ export default function Studio() {
   const [selected, setSelected] = useState<string | null>(null);
   const [view, setView] = useState<'face' | 'dos' | 'g34' | 'd34' | 'detail'>('face');
   const [context, setContext] = useState<'isolated' | 'mannequin'>('isolated');
-  const [lightTheme, setLightTheme] = useState(false);
+  const [lightTheme, setLightTheme] = useState(true);
   const [advanced, setAdvanced] = useState(false);
   const [compare, setCompare] = useState(false);
   const [realistic, setRealistic] = useState(false);
