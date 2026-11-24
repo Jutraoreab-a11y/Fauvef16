@@ -7,6 +7,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { useEffect, useMemo } from 'react';
 import type { WebGLRenderer } from 'three';
 import { MATERIALS } from './data';
+import { garmentFrontZ, mannequinGeometries, vestParts, type ProductPart } from './garment';
 import type {
   StudioAsset,
   StudioContext,
@@ -28,16 +29,17 @@ interface StudioCanvasProps {
   onRendererReady: (renderer: WebGLRenderer) => void;
 }
 
-interface ProductPart {
-  id: string;
-  zone: string;
-  geometry: THREE.BufferGeometry;
+interface TexturePair {
+  /** Texture de couleur claire : elle module la teinte sans l'assombrir. */
+  map: THREE.CanvasTexture;
+  /** Texture contrastée, utilisée seulement pour le relief. */
+  bump: THREE.CanvasTexture;
 }
 
 interface TextureMaps {
-  knit: THREE.CanvasTexture;
-  rib: THREE.CanvasTexture;
-  leather: THREE.CanvasTexture;
+  knit: TexturePair;
+  rib: TexturePair;
+  leather: TexturePair;
 }
 
 const VIEW_ROTATION: Record<StudioView, number> = {
@@ -48,12 +50,13 @@ const VIEW_ROTATION: Record<StudioView, number> = {
   detail: 0,
 };
 
+// [distance, hauteur visée] : cadre tout le mannequin, tête comprise.
 const VIEW_CAMERA: Record<StudioView, [number, number]> = {
-  face: [5.4, 0],
-  dos: [5.4, 0],
-  g34: [5.4, 0],
-  d34: [5.4, 0],
-  detail: [2.6, 0.35],
+  face: [6.2, 0.15],
+  dos: [6.2, 0.15],
+  g34: [6.2, 0.15],
+  d34: [6.2, 0.15],
+  detail: [2.6, 0.45],
 };
 
 const BACK_HIDE = new Set(['zip', 'poches', 'boutons']);
@@ -76,8 +79,31 @@ function createTexture(
   return texture;
 }
 
+/**
+ * Une texture grise multipliée par la couleur divisait la luminosité des tissus par 4 à 5.
+ * On garde le motif contrasté pour le relief et on en tire une version presque blanche pour la couleur.
+ */
+function createTexturePair(
+  draw: (context: CanvasRenderingContext2D, size: number) => void,
+  size: number,
+  repeat: number,
+): TexturePair {
+  let source: HTMLCanvasElement | null = null;
+  const bump = createTexture((context, canvasSize) => {
+    draw(context, canvasSize);
+    source = context.canvas;
+  }, size, repeat);
+  bump.colorSpace = THREE.NoColorSpace;
+  const map = createTexture((context, canvasSize) => {
+    if (source) context.drawImage(source, 0, 0);
+    context.fillStyle = 'rgba(255,255,255,0.78)';
+    context.fillRect(0, 0, canvasSize, canvasSize);
+  }, size, repeat);
+  return { map, bump };
+}
+
 function createTextureMaps(): TextureMaps {
-  const knit = createTexture((context, size) => {
+  const knit = createTexturePair((context, size) => {
     context.fillStyle = '#808080';
     context.fillRect(0, 0, size, size);
     for (let y = 0; y < size; y += 8) {
@@ -94,7 +120,7 @@ function createTextureMaps(): TextureMaps {
     }
   }, 256, 3);
 
-  const rib = createTexture((context, size) => {
+  const rib = createTexturePair((context, size) => {
     for (let x = 0; x < size; x += 16) {
       const gradient = context.createLinearGradient(x, 0, x + 16, 0);
       gradient.addColorStop(0, '#3a3a3a');
@@ -105,7 +131,7 @@ function createTextureMaps(): TextureMaps {
     }
   }, 256, 4);
 
-  const leather = createTexture((context, size) => {
+  const leather = createTexturePair((context, size) => {
     context.fillStyle = '#7a7a7a';
     context.fillRect(0, 0, size, size);
     for (let index = 0; index < 2600; index += 1) {
@@ -116,105 +142,6 @@ function createTextureMaps(): TextureMaps {
   }, 256, 2);
 
   return { knit, rib, leather };
-}
-
-function polygon(points: [number, number][]): THREE.Shape {
-  const shape = new THREE.Shape();
-  points.forEach(([x, y], index) => {
-    if (index === 0) shape.moveTo(x, y);
-    else shape.lineTo(x, y);
-  });
-  shape.closePath();
-  return shape;
-}
-
-function roundedRectangle(x0: number, y0: number, x1: number, y1: number, radius: number) {
-  const shape = new THREE.Shape();
-  shape.moveTo(x0 + radius, y0);
-  shape.lineTo(x1 - radius, y0);
-  shape.quadraticCurveTo(x1, y0, x1, y0 + radius);
-  shape.lineTo(x1, y1 - radius);
-  shape.quadraticCurveTo(x1, y1, x1 - radius, y1);
-  shape.lineTo(x0 + radius, y1);
-  shape.quadraticCurveTo(x0, y1, x0, y1 - radius);
-  shape.lineTo(x0, y0 + radius);
-  shape.quadraticCurveTo(x0, y0, x0 + radius, y0);
-  return shape;
-}
-
-function extrude(shape: THREE.Shape, depth: number, zOffset = 0): THREE.ExtrudeGeometry {
-  const geometry = new THREE.ExtrudeGeometry(shape, {
-    depth,
-    bevelEnabled: true,
-    bevelThickness: 0.025,
-    bevelSize: 0.02,
-    bevelSegments: 3,
-    curveSegments: 14,
-  });
-  geometry.translate(0, 0, -depth / 2 + zOffset);
-  return geometry;
-}
-
-function vestParts(values: Record<string, number>): ProductPart[] {
-  // Le torse du mannequin est une capsule de rayon 0.55 : le vêtement l'enveloppe avec un jeu de 0.06.
-  const boxy = values.boxy ?? 40;
-  const bottom = -1.05 - ((values.longueur ?? 55) - 55) * 0.006;
-  const collarHeight = 0.12 + (values.col_hauteur ?? 30) * 0.0035;
-  const radius = 0.61 + (boxy - 40) * 0.002;
-  const top = 0.98;
-  const height = top - bottom;
-  const centerY = (top + bottom) / 2;
-  const parts: ProductPart[] = [];
-  const add = (zone: string, id: string, geometry: THREE.BufferGeometry) => {
-    parts.push({ id, zone, geometry });
-  };
-  // Arc frontal d'un cylindre, pour poser poches et boutons sur la surface courbe.
-  const frontArc = (x: number, width: number) => {
-    const a = Math.asin(Math.max(-1, Math.min(1, x / radius)));
-    return { start: a - width / 2, length: width };
-  };
-
-  add('corps', 'body', new THREE.CylinderGeometry(radius, radius * 1.02, height, 48, 1, true)
-    .translate(0, centerY, 0));
-
-  // Manches : même position et rotation que les bras du mannequin (± 0.85, rotation ± 0.18).
-  add('manches', 'left-sleeve', new THREE.CapsuleGeometry(0.19, 0.9, 8, 16)
-    .rotateZ(0.18).translate(-0.85, 0.05, 0));
-  add('manches', 'right-sleeve', new THREE.CapsuleGeometry(0.19, 0.9, 8, 16)
-    .rotateZ(-0.18).translate(0.85, 0.05, 0));
-
-  add('col', 'collar', new THREE.CylinderGeometry(0.25, 0.27, collarHeight, 40, 1, true)
-    .translate(0, top + collarHeight / 2 - 0.02, 0));
-
-  add('bords', 'ribbing', new THREE.CylinderGeometry(radius + 0.012, radius + 0.012, 0.12, 48, 1, true)
-    .translate(0, bottom + 0.06, 0));
-
-  add('zip', 'zip', new THREE.BoxGeometry(0.03, height, 0.03)
-    .translate(0, centerY, radius + 0.012));
-
-  const leftPocket = frontArc(-0.4, 0.42);
-  const rightPocket = frontArc(0.4, 0.42);
-  const pocketY = -0.3;
-  add('poches', 'left-pocket', new THREE.CylinderGeometry(radius + 0.02, radius + 0.02, 0.34, 16, 1, true, leftPocket.start, leftPocket.length)
-    .translate(0, pocketY, 0));
-  add('poches', 'right-pocket', new THREE.CylinderGeometry(radius + 0.02, radius + 0.02, 0.34, 16, 1, true, rightPocket.start, rightPocket.length)
-    .translate(0, pocketY, 0));
-
-  const button = (x: number, y: number, z: number) => new THREE.SphereGeometry(0.035, 16, 12)
-    .scale(1, 1, 0.5).translate(x, y, z);
-  const zFront = (x: number, r: number) => Math.sqrt(Math.max(r * r - x * x, 0)) + 0.02;
-  add('boutons', 'left-button', button(-0.4, pocketY + 0.15, zFront(-0.4, radius)));
-  add('boutons', 'right-button', button(0.4, pocketY + 0.15, zFront(0.4, radius)));
-  add('boutons', 'left-collar-button', button(-0.1, top + collarHeight * 0.5, zFront(-0.1, 0.25)));
-  add('boutons', 'right-collar-button', button(0.1, top + collarHeight * 0.5, zFront(0.1, 0.25)));
-
-  add('couture', 'left-pocket-stitch', new THREE.CylinderGeometry(radius + 0.03, radius + 0.03, 0.006, 24, 1, true, leftPocket.start, leftPocket.length)
-    .translate(0, pocketY + 0.17, 0));
-  add('couture', 'right-pocket-stitch', new THREE.CylinderGeometry(radius + 0.03, radius + 0.03, 0.006, 24, 1, true, rightPocket.start, rightPocket.length)
-    .translate(0, pocketY + 0.17, 0));
-  add('couture', 'bottom-stitch', new THREE.TorusGeometry(radius + 0.006, 0.006, 8, 64)
-    .rotateX(Math.PI / 2).translate(0, bottom + 0.12, 0));
-  return parts;
 }
 
 function gloveParts(values: Record<string, number>): ProductPart[] {
@@ -284,13 +211,18 @@ function ProductMeshes({
   const zones = useMemo(() => new Map(spec.zones.map((zone) => [zone.id, zone])), [spec.zones]);
 
   useEffect(() => () => {
-    textures.knit.dispose();
-    textures.rib.dispose();
-    textures.leather.dispose();
+    Object.values(textures).forEach(({ map, bump }) => {
+      map.dispose();
+      bump.dispose();
+    });
   }, [textures]);
 
+  useEffect(() => () => {
+    parts.forEach((part) => part.geometry.dispose());
+  }, [parts]);
+
   return (
-    <group rotation-y={VIEW_ROTATION[view]}>
+    <group>
       {parts.map((part) => {
         const zone = zones.get(part.zone);
         if (!zone) return null;
@@ -319,8 +251,8 @@ function ProductMeshes({
             <meshPhysicalMaterial
               color={zone.hex}
               side={THREE.DoubleSide}
-              map={materialMap}
-              bumpMap={materialMap}
+              map={materialMap?.map ?? null}
+              bumpMap={materialMap?.bump ?? null}
               bumpScale={materialSettings.bumpScale}
               roughness={materialSettings.roughness}
               metalness={materialSettings.metalness}
@@ -364,36 +296,23 @@ function Mannequin({
   lightTheme,
   context,
 }: Pick<StudioCanvasProps, 'type' | 'lightTheme' | 'context'>) {
-  const color = lightTheme ? '#cfcac2' : '#2a2c31';
+  // Un peu plus clair qu'avant en thème sombre, pour que le mannequin se détache du fond.
+  const color = lightTheme ? '#d6d1c9' : '#3a3d44';
+  const geometries = useMemo(() => (type === 'apparel' ? mannequinGeometries() : []), [type]);
+  useEffect(() => () => geometries.forEach((geometry) => geometry.dispose()), [geometries]);
+
   return (
     <group visible={context === 'mannequin'}>
       {type === 'apparel' ? (
-        <>
-          <mesh position={[0, -0.15, 0]} castShadow>
-            <capsuleGeometry args={[0.55, 1.2, 12, 24]} />
-            <meshStandardMaterial color={color} roughness={0.9} />
+        geometries.map((geometry, index) => (
+          <mesh key={index} geometry={geometry} castShadow receiveShadow>
+            <meshStandardMaterial color={color} roughness={0.75} side={THREE.DoubleSide} />
           </mesh>
-          <mesh position={[0, 1.1, 0]} castShadow>
-            <cylinderGeometry args={[0.16, 0.18, 0.3, 24]} />
-            <meshStandardMaterial color={color} roughness={0.9} />
-          </mesh>
-          <mesh position={[0, 1.42, 0]} scale={[0.9, 1.1, 0.95]} castShadow>
-            <sphereGeometry args={[0.26, 32, 24]} />
-            <meshStandardMaterial color={color} roughness={0.9} />
-          </mesh>
-          <mesh position={[-0.85, 0.05, 0]} rotation-z={0.18} castShadow>
-            <capsuleGeometry args={[0.14, 0.9, 8, 16]} />
-            <meshStandardMaterial color={color} roughness={0.9} />
-          </mesh>
-          <mesh position={[0.85, 0.05, 0]} rotation-z={-0.18} castShadow>
-            <capsuleGeometry args={[0.14, 0.9, 8, 16]} />
-            <meshStandardMaterial color={color} roughness={0.9} />
-          </mesh>
-        </>
+        ))
       ) : (
         <mesh position={[0, -1, 0]} castShadow>
           <cylinderGeometry args={[0.4, 0.42, 1.6, 32]} />
-          <meshStandardMaterial color={color} roughness={0.9} />
+          <meshStandardMaterial color={color} roughness={0.75} />
         </mesh>
       )}
     </group>
@@ -419,10 +338,12 @@ function AssetDecal({
   asset,
   type,
   view,
+  values,
 }: {
   asset: StudioAsset;
   type: StudioCanvasProps['type'];
   view: StudioView;
+  values: Record<string, number>;
 }) {
   const texture = useMemo(
     () => asset.image ? new THREE.CanvasTexture(asset.image) : patchTexture('PATCH'),
@@ -432,16 +353,13 @@ function AssetDecal({
   texture.colorSpace = THREE.SRGBColorSpace;
   const ratio = asset.image ? asset.image.naturalHeight / asset.image.naturalWidth : 1;
   const width = asset.size * 2.2;
+  const x = asset.x * 1.4;
+  const y = asset.y * 1.6 + (type === 'apparel' ? 0.3 : -0.1);
+  // Sur le gilet, le patch est plaqué sur la face avant au lieu de flotter à profondeur fixe.
+  const z = type === 'apparel' ? garmentFrontZ(values, x, y) + 0.03 : 0.66;
 
   return (
-    <mesh
-      position={[
-        asset.x * 1.4,
-        asset.y * 1.6 + (type === 'apparel' ? 0.3 : -0.1),
-        type === 'apparel' ? 0.2 : 0.66,
-      ]}
-      visible={view !== 'dos'}
-    >
+    <mesh position={[x, y, z]} visible={view !== 'dos'}>
       <planeGeometry args={[width, width * ratio]} />
       <meshStandardMaterial
         map={texture}
@@ -469,38 +387,58 @@ function CameraRig({ view }: { view: StudioView }) {
       makeDefault
       target={[0, height, 0]}
       minDistance={2.2}
-      maxDistance={7}
+      maxDistance={8}
       enableDamping
     />
   );
 }
 
-/** Éclairage « studio photo » : environnement HDR procédural, sans téléchargement réseau. */
-function RealisticLighting({ enabled }: { enabled: boolean }) {
+/**
+ * Éclairage studio permanent : environnement procédural (reflets du zip, des pressions,
+ * du cuir) + lumière principale, contre-jours pour détacher les silhouettes sombres du fond,
+ * et un fill doux. La « Vue réelle » pousse seulement l'environnement et l'exposition.
+ */
+function StudioLighting({ realistic }: { realistic: boolean }) {
   const { gl, scene } = useThree();
 
   useEffect(() => {
-    if (!enabled) return undefined;
-
     const pmrem = new THREE.PMREMGenerator(gl);
     const envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     const previousEnvironment = scene.environment;
-    const previousExposure = gl.toneMappingExposure;
-
     scene.environment = envTexture;
-    scene.environmentIntensity = 0.6;
-    gl.toneMappingExposure = 1.1;
-
     return () => {
       scene.environment = previousEnvironment;
-      scene.environmentIntensity = 1;
-      gl.toneMappingExposure = previousExposure;
       envTexture.dispose();
       pmrem.dispose();
     };
-  }, [enabled, gl, scene]);
+  }, [gl, scene]);
 
-  return null;
+  useEffect(() => {
+    scene.environmentIntensity = realistic ? 0.85 : 0.5;
+    gl.toneMappingExposure = realistic ? 1.15 : 1.05;
+  }, [realistic, gl, scene]);
+
+  return (
+    <>
+      <ambientLight intensity={0.12} />
+      <hemisphereLight args={[0xffffff, 0x4a4642, 0.65]} />
+      <directionalLight
+        position={[2.8, 4, 4]}
+        intensity={2.1}
+        castShadow
+        shadow-mapSize={[2048, 2048]}
+        shadow-bias={-0.0004}
+        shadow-normalBias={0.02}
+        shadow-camera-left={-3}
+        shadow-camera-right={3}
+        shadow-camera-top={3}
+        shadow-camera-bottom={-3}
+      />
+      <directionalLight position={[-4, 1.5, 2.5]} intensity={0.75} />
+      <directionalLight position={[-2.5, 2.8, -3.5]} intensity={1.3} />
+      <directionalLight position={[2.8, 1.2, -3.5]} intensity={0.9} />
+    </>
+  );
 }
 
 export default function StudioCanvas({
@@ -515,41 +453,37 @@ export default function StudioCanvas({
   onSelect,
   onRendererReady,
 }: StudioCanvasProps) {
+  const values = useMemo(
+    () => Object.fromEntries(spec.sliders.map(({ id, value }) => [id, value])),
+    [spec.sliders],
+  );
+
   return (
     <Canvas
-      camera={{ position: [0, 0, 5.4], fov: 30 }}
+      camera={{ position: [0, 0.15, 6.2], fov: 30 }}
       dpr={[1, 2]}
       shadows
       gl={{ antialias: true, preserveDrawingBuffer: true }}
       fallback={<p className="fallback">Le rendu 3D n’est pas disponible dans ce navigateur.</p>}
       onPointerMissed={() => onSelect(null)}
       onCreated={({ gl }) => {
-        gl.toneMapping = THREE.ACESFilmicToneMapping;
+        // Neutral garde les teintes fidèles à la fiche, là où ACES les assombrit et les désature.
+        gl.toneMapping = THREE.NeutralToneMapping;
         gl.outputColorSpace = THREE.SRGBColorSpace;
         onRendererReady(gl);
       }}
     >
       <color attach="background" args={[lightTheme ? '#F4F1EC' : '#0C0C0D']} />
-      <ambientLight intensity={0.8} />
-      <hemisphereLight args={[0xffffff, 0x333333, 0.9]} />
-      <directionalLight
-        position={[2.5, 3, 3]}
-        intensity={2.2}
-        castShadow
-        shadow-mapSize={[1024, 1024]}
-        shadow-bias={-0.0005}
-      />
-      <directionalLight position={[-3, 1, 2]} intensity={0.9} />
-      <directionalLight position={[0, 2, 4]} intensity={0.7} />
+      <StudioLighting realistic={realistic} />
       <mesh rotation-x={-Math.PI / 2} position-y={-1.45} receiveShadow>
         <planeGeometry args={[12, 12]} />
         <shadowMaterial opacity={lightTheme ? 0.12 : 0.35} />
       </mesh>
-      <RealisticLighting enabled={realistic} />
       {realistic && (
         <ContactShadows position={[0, -1.44, 0]} opacity={0.6} scale={8} blur={2.4} far={3} />
       )}
-      <group>
+      {/* Mannequin, vêtement et patchs tournent ensemble : ils ne peuvent plus se décaler. */}
+      <group rotation-y={VIEW_ROTATION[view]}>
         <Mannequin type={type} lightTheme={lightTheme} context={context} />
         <ProductMeshes
           type={type}
@@ -558,11 +492,9 @@ export default function StudioCanvas({
           view={view}
           onSelect={onSelect}
         />
-        <group rotation-y={VIEW_ROTATION[view]}>
-          {assets.map((asset) => (
-            <AssetDecal key={asset.id} asset={asset} type={type} view={view} />
-          ))}
-        </group>
+        {assets.map((asset) => (
+          <AssetDecal key={asset.id} asset={asset} type={type} view={view} values={values} />
+        ))}
       </group>
       <CameraRig view={view} />
     </Canvas>
