@@ -156,42 +156,64 @@ function extrude(shape: THREE.Shape, depth: number, zOffset = 0): THREE.ExtrudeG
 }
 
 function vestParts(values: Record<string, number>): ProductPart[] {
-  const boxiness = 0.82 + (values.boxy ?? 40) * 0.005;
+  // Le torse du mannequin est une capsule de rayon 0.55 : le vêtement l'enveloppe avec un jeu de 0.06.
+  const boxy = values.boxy ?? 40;
   const bottom = -1.05 - ((values.longueur ?? 55) - 55) * 0.006;
   const collarHeight = 0.12 + (values.col_hauteur ?? 30) * 0.0035;
+  const radius = 0.61 + (boxy - 40) * 0.002;
+  const top = 0.98;
+  const height = top - bottom;
+  const centerY = (top + bottom) / 2;
   const parts: ProductPart[] = [];
   const add = (zone: string, id: string, geometry: THREE.BufferGeometry) => {
     parts.push({ id, zone, geometry });
   };
+  // Arc frontal d'un cylindre, pour poser poches et boutons sur la surface courbe.
+  const frontArc = (x: number, width: number) => {
+    const a = Math.asin(Math.max(-1, Math.min(1, x / radius)));
+    return { start: a - width / 2, length: width };
+  };
 
-  add('corps', 'body', extrude(polygon([
-    [-0.2, 0.98], [-0.6, 0.9], [-0.78, 0.5], [-boxiness, 0.2], [-boxiness, bottom],
-    [boxiness, bottom], [boxiness, 0.2], [0.78, 0.5], [0.6, 0.9], [0.2, 0.98],
-  ]), 0.14));
-  add('manches', 'left-sleeve', extrude(polygon([
-    [-0.6, 0.9], [-0.2, 0.98], [-0.2, 0.72], [-0.66, 0.66],
-  ]), 0.1, 0.08));
-  add('manches', 'right-sleeve', extrude(polygon([
-    [0.6, 0.9], [0.2, 0.98], [0.2, 0.72], [0.66, 0.66],
-  ]), 0.1, 0.08));
-  add('col', 'collar', extrude(polygon([
-    [-0.24, 0.98], [-0.22, 0.98 + collarHeight], [0.22, 0.98 + collarHeight], [0.24, 0.98],
-  ]), 0.12, 0.02));
-  add('bords', 'ribbing', extrude(polygon([
-    [-boxiness - 0.01, bottom], [boxiness + 0.01, bottom],
-    [boxiness + 0.01, bottom + 0.1], [-boxiness - 0.01, bottom + 0.1],
-  ]), 0.16));
-  add('zip', 'zip', new THREE.BoxGeometry(0.03, 0.98 - bottom, 0.03)
-    .translate(0, (0.98 + bottom) / 2, 0.13));
-  add('poches', 'left-pocket', extrude(roundedRectangle(-0.6, -0.45, -0.2, -0.12, 0.03), 0.04, 0.12));
-  add('poches', 'right-pocket', extrude(roundedRectangle(0.2, -0.45, 0.6, -0.12, 0.03), 0.04, 0.12));
-  add('boutons', 'left-button', new THREE.SphereGeometry(0.035, 16, 12).scale(1, 1, 0.5).translate(-0.4, -0.16, 0.2));
-  add('boutons', 'right-button', new THREE.SphereGeometry(0.035, 16, 12).scale(1, 1, 0.5).translate(0.4, -0.16, 0.2));
-  add('boutons', 'left-collar-button', new THREE.SphereGeometry(0.035, 16, 12).scale(1, 1, 0.5).translate(-0.1, 1.02 + collarHeight * 0.5, 0.11));
-  add('boutons', 'right-collar-button', new THREE.SphereGeometry(0.035, 16, 12).scale(1, 1, 0.5).translate(0.1, 1.02 + collarHeight * 0.5, 0.11));
-  add('couture', 'left-pocket-stitch', new THREE.BoxGeometry(0.4, 0.01, 0.01).translate(-0.4, -0.12, 0.17));
-  add('couture', 'right-pocket-stitch', new THREE.BoxGeometry(0.4, 0.01, 0.01).translate(0.4, -0.12, 0.17));
-  add('couture', 'bottom-stitch', new THREE.BoxGeometry(2 * boxiness - 0.1, 0.01, 0.01).translate(0, bottom + 0.1, 0.12));
+  add('corps', 'body', new THREE.CylinderGeometry(radius, radius * 1.02, height, 48, 1, true)
+    .translate(0, centerY, 0));
+
+  // Manches : même position et rotation que les bras du mannequin (± 0.85, rotation ± 0.18).
+  add('manches', 'left-sleeve', new THREE.CapsuleGeometry(0.19, 0.9, 8, 16)
+    .rotateZ(0.18).translate(-0.85, 0.05, 0));
+  add('manches', 'right-sleeve', new THREE.CapsuleGeometry(0.19, 0.9, 8, 16)
+    .rotateZ(-0.18).translate(0.85, 0.05, 0));
+
+  add('col', 'collar', new THREE.CylinderGeometry(0.25, 0.27, collarHeight, 40, 1, true)
+    .translate(0, top + collarHeight / 2 - 0.02, 0));
+
+  add('bords', 'ribbing', new THREE.CylinderGeometry(radius + 0.012, radius + 0.012, 0.12, 48, 1, true)
+    .translate(0, bottom + 0.06, 0));
+
+  add('zip', 'zip', new THREE.BoxGeometry(0.03, height, 0.03)
+    .translate(0, centerY, radius + 0.012));
+
+  const leftPocket = frontArc(-0.4, 0.42);
+  const rightPocket = frontArc(0.4, 0.42);
+  const pocketY = -0.3;
+  add('poches', 'left-pocket', new THREE.CylinderGeometry(radius + 0.02, radius + 0.02, 0.34, 16, 1, true, leftPocket.start, leftPocket.length)
+    .translate(0, pocketY, 0));
+  add('poches', 'right-pocket', new THREE.CylinderGeometry(radius + 0.02, radius + 0.02, 0.34, 16, 1, true, rightPocket.start, rightPocket.length)
+    .translate(0, pocketY, 0));
+
+  const button = (x: number, y: number, z: number) => new THREE.SphereGeometry(0.035, 16, 12)
+    .scale(1, 1, 0.5).translate(x, y, z);
+  const zFront = (x: number, r: number) => Math.sqrt(Math.max(r * r - x * x, 0)) + 0.02;
+  add('boutons', 'left-button', button(-0.4, pocketY + 0.15, zFront(-0.4, radius)));
+  add('boutons', 'right-button', button(0.4, pocketY + 0.15, zFront(0.4, radius)));
+  add('boutons', 'left-collar-button', button(-0.1, top + collarHeight * 0.5, zFront(-0.1, 0.25)));
+  add('boutons', 'right-collar-button', button(0.1, top + collarHeight * 0.5, zFront(0.1, 0.25)));
+
+  add('couture', 'left-pocket-stitch', new THREE.CylinderGeometry(radius + 0.03, radius + 0.03, 0.006, 24, 1, true, leftPocket.start, leftPocket.length)
+    .translate(0, pocketY + 0.17, 0));
+  add('couture', 'right-pocket-stitch', new THREE.CylinderGeometry(radius + 0.03, radius + 0.03, 0.006, 24, 1, true, rightPocket.start, rightPocket.length)
+    .translate(0, pocketY + 0.17, 0));
+  add('couture', 'bottom-stitch', new THREE.TorusGeometry(radius + 0.006, 0.006, 8, 64)
+    .rotateX(Math.PI / 2).translate(0, bottom + 0.12, 0));
   return parts;
 }
 
@@ -508,16 +530,17 @@ export default function StudioCanvas({
       }}
     >
       <color attach="background" args={[lightTheme ? '#F4F1EC' : '#0C0C0D']} />
-      <ambientLight intensity={0.45} />
-      <hemisphereLight args={[0xffffff, 0x222222, 0.55]} />
+      <ambientLight intensity={0.8} />
+      <hemisphereLight args={[0xffffff, 0x333333, 0.9]} />
       <directionalLight
         position={[2.5, 3, 3]}
-        intensity={1.8}
+        intensity={2.2}
         castShadow
         shadow-mapSize={[1024, 1024]}
         shadow-bias={-0.0005}
       />
-      <directionalLight position={[-3, 1, 2]} intensity={0.65} />
+      <directionalLight position={[-3, 1, 2]} intensity={0.9} />
+      <directionalLight position={[0, 2, 4]} intensity={0.7} />
       <mesh rotation-x={-Math.PI / 2} position-y={-1.45} receiveShadow>
         <planeGeometry args={[12, 12]} />
         <shadowMaterial opacity={lightTheme ? 0.12 : 0.35} />
