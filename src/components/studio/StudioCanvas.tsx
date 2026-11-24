@@ -372,9 +372,19 @@ function AssetDecal({
   );
 }
 
+// Largeur à garder visible (manches comprises) : sert quand la vue 3D devient étroite,
+// par exemple quand le patron à plat s'ouvre à côté.
+const FRAME_WIDTH = 2.5;
+
 function CameraRig({ view }: { view: StudioView }) {
-  const { camera } = useThree();
-  const [distance, height] = VIEW_CAMERA[view];
+  const { camera, size } = useThree();
+  const [baseDistance, height] = VIEW_CAMERA[view];
+  const aspect = size.width / Math.max(size.height, 1);
+  const fov = (camera as THREE.PerspectiveCamera).fov ?? 30;
+  const halfTan = Math.tan(THREE.MathUtils.degToRad(fov / 2));
+  const distance = view === 'detail'
+    ? baseDistance
+    : Math.max(baseDistance, FRAME_WIDTH / (2 * halfTan * aspect));
 
   useEffect(() => {
     camera.position.set(0, height, distance);
@@ -387,7 +397,7 @@ function CameraRig({ view }: { view: StudioView }) {
       makeDefault
       target={[0, height, 0]}
       minDistance={2.2}
-      maxDistance={8}
+      maxDistance={14}
       enableDamping
     />
   );
