@@ -1,6 +1,6 @@
 # FauveF16 (Studio 3D Tech Pack)
 
-Squelette du projet, à ouvrir dans VS Code.
+Studio de création de fiches techniques avec aperçu 3D, import d'images et export local.
 
 ## Démarrage
 
@@ -12,15 +12,13 @@ npm run dev                  # http://localhost:3000
 
 ## Contenu
 
-- `prototype/` : maquette HTML validée (ouvrir `index.html` dans un navigateur).
+- `prototype/` : interface du studio. Ses fichiers sont synchronisés vers `public/studio/` avant le démarrage et le build.
 - `supabase/migrations/0001_famal_init.sql` : schéma `famal_*`, RLS et buckets. Non exécuté : à valider avant d'appliquer sur le projet Supabase partagé.
 - `src/types/famal-spec.ts` : schémas polymorphiques ApparelSpec / GearSpec et types des lignes `famal_*`.
-- `src/app/` : pages Next.js (App Router). La page Studio et le viewport Three.js sont à faire (Phase 1).
+- `src/app/` : application Next.js (App Router), qui affiche le studio à la racine.
 - `public/models/` : fichiers `.glb` des bases 3D (à fournir).
 
-## Ce qui reste à faire
+## Limites actuelles
 
-1. Valider le SQL puis l'appliquer au projet Supabase.
-2. Brancher le viewport React Three Fiber sur les `.glb`.
-3. Route `/api/analyze-product` (Claude Vision), puis copilote, puis export PDF et ZIP.
+L'analyse du produit et le copilote sont simulés localement. Le rendu utilise une géométrie 3D générée dans le navigateur ; l'intégration Supabase, Claude Vision et les exports PDF/ZIP restent à réaliser.
 # Fauvef16
