@@ -13,6 +13,7 @@ import {
 } from './flat-pattern';
 import { GARMENT_TOP, HALF_ZIP_BOTTOM, buttonHeights, defaultGarmentOptions } from './garment-options';
 import type { StudioSpec } from './types';
+import { zoneInUse } from './utils';
 
 interface PatternViewProps {
   type: ProductType;
@@ -310,7 +311,7 @@ export default function PatternView({ type, spec, selected, onSelect, onSliderCh
         </svg>
       )}
       <ul className="piece-list">
-        {zones.map((zone) => (
+        {zones.filter((zone) => zoneInUse(spec, zone.id)).map((zone) => (
           <li key={zone.id}>
             <button type="button" className={selected === zone.id ? 'active' : ''} onClick={() => onSelect(zone.id)}>
               <span style={{ display: 'inline-block', width: 10, height: 10, background: zone.hex, marginRight: 6 }} />

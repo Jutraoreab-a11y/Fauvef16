@@ -20,7 +20,8 @@ import {
   type GarmentOptions,
 } from './garment-options';
 import { ASSET_SLOTS, BASES, MATERIALS } from './data';
-import { applyFinish, clamp, createInitialSpec, dominantColors, parseCommand, parseGarmentCommand, specsTableRows } from './utils';
+import { applyFinish, applyGarmentPreset, clamp, colorShares, createInitialSpec, parseCommand, parseGarmentCommand, specsTableRows, tonalSeam, zoneInUse } from './utils';
+import { garmentEntry, garmentKindOf, garmentName } from './catalogue';
 import type {
   ChatMessage,
   PipelineStepState,
@@ -62,9 +63,9 @@ const INITIAL_MESSAGE: ChatMessage = {
   text: 'Copilote prêt. Décrivez un ajustement en français : le patch est appliqué à la scène.',
 };
 
-function defaultModelName(type: ProductType): string {
+function defaultModelName(garment: string): string {
   const stamp = new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date());
-  return `${BASES[type].name} · ${stamp}`;
+  return `${garment} · ${stamp}`;
 }
 
 /** Image réduite en data URL : logos et aperçus tiennent dans la sauvegarde. */
@@ -135,7 +136,7 @@ export default function Studio() {
   const [messages, setMessages] = useState<ChatMessage[]>([INITIAL_MESSAGE]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [modelId, setModelId] = useState<string | null>(null);
-  const [modelName, setModelName] = useState(() => defaultModelName('apparel'));
+  const [modelName, setModelName] = useState(() => defaultModelName(BASES.apparel.name));
   const [saveState, setSaveState] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle');
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -215,17 +216,38 @@ export default function Studio() {
     });
   };
 
+  /** Spec de départ d'un vêtement du catalogue (gilet, sweat…) ou de la base équipement. */
+  const startingSpec = (nextType: ProductType, kind: string): StudioSpec => (
+    nextType === 'apparel' ? applyGarmentPreset(createInitialSpec('apparel'), kind) : createInitialSpec(nextType)
+  );
+
   const handleTypeChange = (nextType: ProductType) => {
     if (type === nextType) return;
     setType(nextType);
-    setSpec(createInitialSpec(nextType));
+    setSpec(startingSpec(nextType, nextType === 'apparel' ? 'gilet_zippe' : 'gant_boxe'));
     setSelected(null);
+  };
+
+  /** Choix dans la liste « Vêtement » : applique col, fermeture, poches et proportions de ce vêtement. */
+  const handleGarmentSelect = (kind: string) => {
+    const entry = garmentEntry(kind);
+    if (!entry?.base) return;
+    if (entry.base !== type) {
+      setType(entry.base);
+      setSpec(startingSpec(entry.base, kind));
+    } else if (entry.base === 'apparel') {
+      setSpec((current) => applyGarmentPreset(current, kind));
+    }
+    setSelected(null);
+    if (!modelIdRef.current) setModelName(defaultModelName(entry.label));
+    showToast(`${entry.label} : 3D et patron mis à jour`);
   };
 
   const handleAnalyze = async (source?: HTMLImageElement) => {
     const sourceImage = source ?? image;
     setAnalyzing(true);
-    const nextSpec = createInitialSpec(type);
+    // On repart du vêtement choisi (gilet, sweat…) et on n'y applique que les couleurs de la photo.
+    const nextSpec = startingSpec(type, garmentKindOf(spec, type));
     setSpec(nextSpec);
     setSelected(null);
     setPipeline({ first: 'waiting', second: 'waiting', third: 'waiting' });
@@ -239,19 +261,28 @@ export default function Studio() {
       await pause(900);
 
       if (sourceImage) {
-        const [mainColor, secondaryColor] = dominantColors(sourceImage);
-        const mainZone = type === 'apparel' ? 'corps' : 'coque';
-        const secondaryZone = type === 'apparel' ? 'bords' : 'manchette';
-        const main = nextSpec.zones.find((zone) => zone.id === mainZone);
-        const secondary = nextSpec.zones.find((zone) => zone.id === secondaryZone);
-
-        if (mainColor && main) {
-          main.hex = mainColor;
-          log.push(`Couleur principale ${mainColor} appliquée à ${main.label}.`);
-        }
-        if (secondaryColor && secondary) {
-          secondary.hex = secondaryColor;
-          log.push(`Couleur secondaire ${secondaryColor} appliquée à ${secondary.label}.`);
+        const [main, secondary] = colorShares(sourceImage);
+        // Une 2e couleur ne compte que si elle couvre une vraie part du produit (pas un logo ou la peau).
+        const strongSecondary = secondary && main && secondary.share >= main.share * 0.35 ? secondary : null;
+        const mainZones = type === 'apparel' ? ['corps', 'manches', 'col', 'poches'] : ['coque'];
+        const accentZone = type === 'apparel' ? 'bords' : 'manchette';
+        log.push(`Vêtement : ${garmentName(nextSpec, type)} (choisi dans la liste).`);
+        if (main) {
+          nextSpec.zones.forEach((zone) => {
+            if (mainZones.includes(zone.id)) zone.hex = main.hex;
+          });
+          log.push(`Couleur principale ${main.hex} appliquée à ${mainZones.length > 1 ? 'toutes les pièces en tissu' : 'la coque'}.`);
+          const accent = nextSpec.zones.find((zone) => zone.id === accentZone);
+          if (accent) {
+            accent.hex = strongSecondary?.hex ?? (type === 'apparel' ? main.hex : accent.hex);
+            log.push(strongSecondary
+              ? `Couleur secondaire ${strongSecondary.hex} appliquée à ${accent.label}.`
+              : `${accent.label} : même couleur que le tissu (pas de 2e couleur marquée sur la photo).`);
+          }
+          // Coutures ton sur ton : c'est ce qu'on voit sur la plupart des vêtements photographiés.
+          const seam = nextSpec.zones.find((zone) => zone.id === 'couture');
+          if (seam && type === 'apparel') seam.hex = tonalSeam(main.hex);
+          if (nextSpec.garment?.finish === 'assorti') Object.assign(nextSpec, applyFinish(nextSpec, 'assorti'));
         }
       } else {
         log.push('Aucune image importée : base 3D par défaut utilisée.');
@@ -296,10 +327,10 @@ export default function Studio() {
     const canvas = renderer.current?.domElement;
     return {
       id: modelIdRef.current ?? undefined,
-      name: current.modelName.trim() || defaultModelName(current.type),
+      name: current.modelName.trim() || defaultModelName(garmentName(current.spec, current.type)),
       collection: current.project,
       productType: current.type,
-      category: BASES[current.type].name,
+      category: garmentName(current.spec, current.type),
       spec: current.spec,
       assets: savedAssets,
       history: current.history,
@@ -342,9 +373,11 @@ export default function Studio() {
     skipAutosave.current = true;
     modelIdRef.current = null;
     setModelId(null);
-    setModelName(defaultModelName(nextType));
+    // Un nouveau modèle garde le vêtement choisi (un nouveau sweat reste un sweat).
+    const kind = garmentKindOf(latest.current.spec, nextType);
+    setModelName(defaultModelName(garmentEntry(kind)?.label ?? BASES[nextType].name));
     setType(nextType);
-    setSpec(createInitialSpec(nextType));
+    setSpec(startingSpec(nextType, kind));
     setAssets([]);
     setHistory([]);
     setMessages([INITIAL_MESSAGE]);
@@ -644,9 +677,9 @@ export default function Studio() {
     }, 'image/png');
   };
 
-  const status = `${BASES[type].name} · Vue ${
+  const status = `${garmentName(spec, type)} · Vue ${
     view === 'g34' ? '3/4 Gauche' : view === 'd34' ? '3/4 Droit' : view === 'dos' ? 'Dos' : view === 'detail' ? 'Détail' : 'Face'
-  } · ${context === 'isolated' ? 'Isolé' : 'Avec mannequin'} · ${spec.zones.length} zones`;
+  } · ${context === 'isolated' ? 'Isolé' : 'Avec mannequin'} · ${spec.zones.filter((zone) => zoneInUse(spec, zone.id)).length} zones`;
 
   return (
     <div className={`app${lightTheme ? ' light' : ''}${advanced ? ' adv' : ''}${compare ? ' compare' : ''}`}>
@@ -745,6 +778,7 @@ export default function Studio() {
           onImageFile={handleImageFile}
           onLogoFile={handleLogoFile}
           onTypeChange={handleTypeChange}
+          onGarmentSelect={handleGarmentSelect}
           onAnalyze={() => { void handleAnalyze(); }}
           onSelectZone={setSelected}
           onColorChange={handleColorChange}

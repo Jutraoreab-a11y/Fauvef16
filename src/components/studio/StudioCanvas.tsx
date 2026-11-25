@@ -2,6 +2,8 @@
 
 import { Canvas, useThree } from '@react-three/fiber';
 import { ContactShadows, OrbitControls } from '@react-three/drei';
+import { EffectComposer, N8AO, ToneMapping } from '@react-three/postprocessing';
+import { ToneMappingMode } from 'postprocessing';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { useEffect, useMemo } from 'react';
@@ -29,17 +31,18 @@ interface StudioCanvasProps {
   onRendererReady: (renderer: WebGLRenderer) => void;
 }
 
-interface TexturePair {
-  /** Texture de couleur claire : elle module la teinte sans l'assombrir. */
+interface FabricMaps {
+  /** Couleur presque blanche, un peu plus sombre dans les creux de la maille. */
   map: THREE.CanvasTexture;
-  /** Texture contrastée, utilisée seulement pour le relief. */
-  bump: THREE.CanvasTexture;
+  /** Relief de la maille (normal map) : accroche la lumière comme un vrai tissu. */
+  normal: THREE.CanvasTexture;
 }
 
 interface TextureMaps {
-  knit: TexturePair;
-  rib: TexturePair;
-  leather: TexturePair;
+  jersey: FabricMaps;
+  rib: FabricMaps;
+  twill: FabricMaps;
+  leather: FabricMaps;
 }
 
 const VIEW_ROTATION: Record<StudioView, number> = {
@@ -79,69 +82,116 @@ function createTexture(
   return texture;
 }
 
+const TILE = 256;
+
+/** Bruit périodique (la texture se répète sans couture visible). */
+function periodicNoise(x: number, y: number, period: number, seed: number): number {
+  const hash = (ix: number, iy: number) => {
+    const wx = ((ix % period) + period) % period;
+    const wy = ((iy % period) + period) % period;
+    const h = Math.sin(wx * 127.1 + wy * 311.7 + seed * 74.7) * 43758.5453;
+    return h - Math.floor(h);
+  };
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const fx = x - xi;
+  const fy = y - yi;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const top = hash(xi, yi) + (hash(xi + 1, yi) - hash(xi, yi)) * sx;
+  const bottom = hash(xi, yi + 1) + (hash(xi + 1, yi + 1) - hash(xi, yi + 1)) * sx;
+  return top + (bottom - top) * sy;
+}
+
 /**
- * Une texture grise multipliée par la couleur divisait la luminosité des tissus par 4 à 5.
- * On garde le motif contrasté pour le relief et on en tire une version presque blanche pour la couleur.
+ * Fabrique la couleur et le relief d'un tissu à partir d'une carte de hauteur (0 à 1).
+ * Le relief est calculé par différences finies, en bouclant sur les bords.
  */
-function createTexturePair(
-  draw: (context: CanvasRenderingContext2D, size: number) => void,
-  size: number,
-  repeat: number,
-): TexturePair {
-  let source: HTMLCanvasElement | null = null;
-  const bump = createTexture((context, canvasSize) => {
-    draw(context, canvasSize);
-    source = context.canvas;
-  }, size, repeat);
-  bump.colorSpace = THREE.NoColorSpace;
-  const map = createTexture((context, canvasSize) => {
-    if (source) context.drawImage(source, 0, 0);
-    context.fillStyle = 'rgba(255,255,255,0.78)';
-    context.fillRect(0, 0, canvasSize, canvasSize);
-  }, size, repeat);
-  return { map, bump };
+function fabricMaps(height: (x: number, y: number) => number, repeat: number, strength: number, shade: number): FabricMaps {
+  const heights = new Float32Array(TILE * TILE);
+  for (let y = 0; y < TILE; y += 1) {
+    for (let x = 0; x < TILE; x += 1) heights[y * TILE + x] = height(x, y);
+  }
+  const at = (x: number, y: number) => heights[((y + TILE) % TILE) * TILE + ((x + TILE) % TILE)];
+
+  const make = (fill: (data: Uint8ClampedArray, index: number, x: number, y: number) => void, colorSpace: THREE.ColorSpace) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = TILE;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Impossible de créer une texture pour le modèle 3D.');
+    const image = context.createImageData(TILE, TILE);
+    for (let y = 0; y < TILE; y += 1) {
+      for (let x = 0; x < TILE; x += 1) fill(image.data, (y * TILE + x) * 4, x, y);
+    }
+    context.putImageData(image, 0, 0);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = colorSpace;
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(repeat, repeat);
+    texture.anisotropy = 8;
+    return texture;
+  };
+
+  const normal = make((data, index, x, y) => {
+    const dx = (at(x - 1, y) - at(x + 1, y)) * strength;
+    const dy = (at(x, y + 1) - at(x, y - 1)) * strength;
+    const length = Math.hypot(dx, dy, 1);
+    data[index] = ((dx / length) * 0.5 + 0.5) * 255;
+    data[index + 1] = ((dy / length) * 0.5 + 0.5) * 255;
+    data[index + 2] = ((1 / length) * 0.5 + 0.5) * 255;
+    data[index + 3] = 255;
+  }, THREE.NoColorSpace);
+
+  const map = make((data, index, x, y) => {
+    const value = 255 - (1 - at(x, y)) * shade;
+    data[index] = data[index + 1] = data[index + 2] = value;
+    data[index + 3] = 255;
+  }, THREE.SRGBColorSpace);
+
+  return { map, normal };
 }
 
 function createTextureMaps(): TextureMaps {
-  const knit = createTexturePair((context, size) => {
-    context.fillStyle = '#808080';
-    context.fillRect(0, 0, size, size);
-    for (let y = 0; y < size; y += 8) {
-      for (let x = 0; x < size; x += 8) {
-        const shade = 100 + Math.random() * 60;
-        context.strokeStyle = `rgb(${shade},${shade},${shade})`;
-        context.lineWidth = 3;
-        context.beginPath();
-        context.moveTo(x, y + 7);
-        context.lineTo(x + 4, y + 1);
-        context.lineTo(x + 8, y + 7);
-        context.stroke();
-      }
-    }
-  }, 256, 3);
+  // Jersey / molleton : colonnes de mailles en « V », avec un léger duvet.
+  const stitchW = 16;
+  const stitchH = 12;
+  const jersey = fabricMaps((x, y) => {
+    const column = Math.floor(x / stitchW);
+    const u = (x % stitchW) / stitchW;
+    const v = ((y + (column % 2) * stitchH * 0.5) % stitchH) / stitchH;
+    const leg = Math.abs(u - 0.5) * 2;
+    const lean = Math.abs(leg - (0.25 + 0.5 * v));
+    const loop = Math.max(0, 1 - lean * 3.2);
+    const fuzz = periodicNoise(x / 4, y / 4, TILE / 4, 1) * 0.25;
+    return Math.min(1, loop * 0.75 + fuzz);
+  }, 4, 2.2, 38);
 
-  const rib = createTexturePair((context, size) => {
-    for (let x = 0; x < size; x += 16) {
-      const gradient = context.createLinearGradient(x, 0, x + 16, 0);
-      gradient.addColorStop(0, '#3a3a3a');
-      gradient.addColorStop(0.5, '#e0e0e0');
-      gradient.addColorStop(1, '#3a3a3a');
-      context.fillStyle = gradient;
-      context.fillRect(x, 0, 16, size);
-    }
-  }, 256, 4);
+  // Bord-côte : côtes verticales bien marquées.
+  const rib = fabricMaps((x, y) => {
+    const ridge = Math.pow(0.5 + 0.5 * Math.cos((2 * Math.PI * x) / 12), 0.6);
+    const rows = 0.12 * (0.5 + 0.5 * Math.cos((2 * Math.PI * y) / 8));
+    return Math.min(1, ridge * 0.85 + rows + periodicNoise(x / 8, y / 8, TILE / 8, 2) * 0.08);
+  }, 4, 3, 60);
 
-  const leather = createTexturePair((context, size) => {
-    context.fillStyle = '#7a7a7a';
-    context.fillRect(0, 0, size, size);
-    for (let index = 0; index < 2600; index += 1) {
-      const shade = 90 + Math.random() * 70;
-      context.fillStyle = `rgb(${shade},${shade},${shade})`;
-      context.fillRect(Math.random() * size, Math.random() * size, 2, 2);
-    }
-  }, 256, 2);
+  // Toile / sergé (coton lourd, fils) : diagonales fines.
+  const twill = fabricMaps((x, y) => {
+    const diagonal = 0.5 + 0.5 * Math.sin((2 * Math.PI * (x + y)) / 8);
+    return diagonal * 0.8 + periodicNoise(x / 6, y / 6, Math.round(TILE / 6), 3) * 0.2;
+  }, 4, 1.6, 26);
 
-  return { knit, rib, leather };
+  // Cuir : grain irrégulier.
+  const leather = fabricMaps((x, y) => {
+    const coarse = periodicNoise(x / 10, y / 10, Math.round(TILE / 10), 4);
+    const fine = periodicNoise(x / 3, y / 3, Math.round(TILE / 3), 5);
+    return Math.pow(coarse, 1.5) * 0.7 + fine * 0.3;
+  }, 3, 2.4, 20);
+
+  return { jersey, rib, twill, leather };
+}
+
+/** Couleur de la brillance du tissu (sheen) : la teinte du tissu, éclaircie. */
+function sheenTint(hex: string): THREE.Color {
+  return new THREE.Color(hex).lerp(new THREE.Color('#ffffff'), 0.35);
 }
 
 function gloveParts(values: Record<string, number>): ProductPart[] {
@@ -214,9 +264,9 @@ function ProductMeshes({
   const zones = useMemo(() => new Map(spec.zones.map((zone) => [zone.id, zone])), [spec.zones]);
 
   useEffect(() => () => {
-    Object.values(textures).forEach(({ map, bump }) => {
+    Object.values(textures).forEach(({ map, normal }) => {
       map.dispose();
-      bump.dispose();
+      normal.dispose();
     });
   }, [textures]);
 
@@ -236,7 +286,9 @@ function ProductMeshes({
             ? textures.leather
             : zone.material === 'métal' || zone.material === 'résine mate'
               ? null
-              : textures.knit;
+              : zone.material === 'coton lourd'
+                ? textures.twill
+                : textures.jersey;
         const materialSettings = materialProperties(zone);
 
         return (
@@ -255,8 +307,9 @@ function ProductMeshes({
               color={zone.hex}
               side={THREE.DoubleSide}
               map={materialMap?.map ?? null}
-              bumpMap={materialMap?.bump ?? null}
-              bumpScale={materialSettings.bumpScale}
+              normalMap={materialMap?.normal ?? null}
+              normalScale={new THREE.Vector2(materialSettings.bumpScale, materialSettings.bumpScale)}
+              sheenColor={sheenTint(zone.hex)}
               roughness={materialSettings.roughness}
               metalness={materialSettings.metalness}
               sheen={materialSettings.sheen}
@@ -275,12 +328,12 @@ function ProductMeshes({
 
 function materialProperties(zone: StudioZone) {
   const presets = {
-    molleton: { roughness: 0.92, metalness: 0, sheen: 0.6, sheenRoughness: 0.6, bumpScale: 0.6, clearcoat: 0, clearcoatRoughness: 0 },
-    'maille épaisse': { roughness: 0.95, metalness: 0, sheen: 0.4, sheenRoughness: 0.7, bumpScale: 0.8, clearcoat: 0, clearcoatRoughness: 0 },
-    'coton lourd': { roughness: 0.85, metalness: 0, sheen: 0.3, sheenRoughness: 0.7, bumpScale: 0.4, clearcoat: 0, clearcoatRoughness: 0 },
-    'cuir mat': { roughness: 0.6, metalness: 0, sheen: 0, sheenRoughness: 0.5, bumpScale: 0.25, clearcoat: 0, clearcoatRoughness: 0 },
-    'cuir brillant': { roughness: 0.22, metalness: 0, sheen: 0, sheenRoughness: 0.5, bumpScale: 0.08, clearcoat: 0.8, clearcoatRoughness: 0.15 },
-    'microfibre haute densité': { roughness: 0.5, metalness: 0, sheen: 0.5, sheenRoughness: 0.4, bumpScale: 0.15, clearcoat: 0, clearcoatRoughness: 0 },
+    molleton: { roughness: 0.9, metalness: 0, sheen: 0.55, sheenRoughness: 0.55, bumpScale: 0.45, clearcoat: 0, clearcoatRoughness: 0 },
+    'maille épaisse': { roughness: 0.93, metalness: 0, sheen: 0.4, sheenRoughness: 0.65, bumpScale: 0.9, clearcoat: 0, clearcoatRoughness: 0 },
+    'coton lourd': { roughness: 0.85, metalness: 0, sheen: 0.3, sheenRoughness: 0.7, bumpScale: 0.45, clearcoat: 0, clearcoatRoughness: 0 },
+    'cuir mat': { roughness: 0.6, metalness: 0, sheen: 0, sheenRoughness: 0.5, bumpScale: 0.35, clearcoat: 0, clearcoatRoughness: 0 },
+    'cuir brillant': { roughness: 0.22, metalness: 0, sheen: 0, sheenRoughness: 0.5, bumpScale: 0.15, clearcoat: 0.8, clearcoatRoughness: 0.15 },
+    'microfibre haute densité': { roughness: 0.5, metalness: 0, sheen: 0.5, sheenRoughness: 0.4, bumpScale: 0.12, clearcoat: 0, clearcoatRoughness: 0 },
     métal: { roughness: 0.3, metalness: 1, sheen: 0, sheenRoughness: 0.5, bumpScale: 0, clearcoat: 0, clearcoatRoughness: 0 },
     'résine mate': { roughness: 0.55, metalness: 0, sheen: 0, sheenRoughness: 0.5, bumpScale: 0, clearcoat: 0.2, clearcoatRoughness: 0.6 },
   } satisfies Record<(typeof MATERIALS)[number], {
@@ -511,6 +564,11 @@ export default function StudioCanvas({
         ))}
       </group>
       <CameraRig view={view} />
+      {/* Ombres de contact entre les volumes (plis, aisselles, sous la capuche) puis rendu des couleurs. */}
+      <EffectComposer multisampling={4}>
+        <N8AO aoRadius={0.22} distanceFalloff={0.6} intensity={realistic ? 3 : 2.2} quality="medium" color="#1b1712" />
+        <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+      </EffectComposer>
     </Canvas>
   );
 }

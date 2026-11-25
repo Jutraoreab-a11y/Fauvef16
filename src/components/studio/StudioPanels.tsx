@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react';
 import type { ChangeEvent, DragEvent, FormEvent } from 'react';
 import type { HexColor, ProductType } from '@/types/famal-spec';
 import { CHIPS, MATERIALS } from './data';
-import { GARMENTS, GARMENT_CATEGORIES } from './catalogue';
+import { GARMENTS, GARMENT_CATEGORIES, garmentKindOf, garmentName } from './catalogue';
 import { ColorMaterial, ComponentEditors } from './ComponentEditors';
-import { materialsFor } from './utils';
+import { materialsFor, zoneInUse } from './utils';
 import type { GarmentOptions } from './garment-options';
 import type {
   ChatMessage,
@@ -28,6 +28,7 @@ interface LeftPanelProps {
   onImageFile: (file: File | undefined) => void;
   onLogoFile: (file: File | undefined) => void;
   onTypeChange: (type: ProductType) => void;
+  onGarmentSelect: (kind: string) => void;
   onAnalyze: () => void;
   onSelectZone: (id: string) => void;
   onColorChange: (id: string, value: HexColor) => void;
@@ -132,16 +133,17 @@ function ZoneEditor({
   );
 }
 
-function GarmentPicker({ type, onTypeChange }: { type: ProductType; onTypeChange: (type: ProductType) => void }) {
-  const [garmentId, setGarmentId] = useState(() => GARMENTS.find((item) => item.base === type)?.id ?? GARMENTS[0].id);
-  const garment = GARMENTS.find((item) => item.id === garmentId) ?? GARMENTS[0];
-
-  useEffect(() => {
-    if (garment.base !== type) {
-      const match = GARMENTS.find((item) => item.base === type);
-      if (match) setGarmentId(match.id);
-    }
-  }, [type, garment.base]);
+function GarmentPicker({
+  current,
+  onGarmentSelect,
+}: {
+  current: string;
+  onGarmentSelect: (kind: string) => void;
+}) {
+  // Vêtement affiché : celui du studio, ou un modèle « à créer » consulté dans la liste.
+  const [viewing, setViewing] = useState(current);
+  useEffect(() => setViewing(current), [current]);
+  const garment = GARMENTS.find((item) => item.id === viewing) ?? GARMENTS[0];
 
   return (
     <div className="garment-picker">
@@ -152,8 +154,8 @@ function GarmentPicker({ type, onTypeChange }: { type: ProductType; onTypeChange
         onChange={(event) => {
           const next = GARMENTS.find((item) => item.id === event.currentTarget.value);
           if (!next) return;
-          setGarmentId(next.id);
-          if (next.base) onTypeChange(next.base);
+          setViewing(next.id);
+          if (next.base) onGarmentSelect(next.id);
         }}
       >
         {GARMENT_CATEGORIES.map((category) => (
@@ -167,7 +169,7 @@ function GarmentPicker({ type, onTypeChange }: { type: ProductType; onTypeChange
         ))}
       </select>
       <p className="muted small">
-        {garment.base ? 'Modèle disponible dans le studio.' : 'Modèle à créer. Pièces prévues :'}
+        {garment.base ? 'Modèle disponible : 3D et patron éclaté prêts à modifier.' : 'Modèle à créer. Pièces prévues :'}
       </p>
       <ul className="piece-list">
         {garment.pieces.map((piece) => (
@@ -191,6 +193,7 @@ export function LeftPanel({
   onImageFile,
   onLogoFile,
   onTypeChange,
+  onGarmentSelect,
   onAnalyze,
   onSelectZone,
   onColorChange,
@@ -227,7 +230,7 @@ export function LeftPanel({
           )}
         </label>
         <p className="hint">Photo de face sur fond clair. Un croquis ou une photo de téléphone suffit.</p>
-        <GarmentPicker type={type} onTypeChange={onTypeChange} />
+        <GarmentPicker current={garmentKindOf(spec, type)} onGarmentSelect={onGarmentSelect} />
         <div className="seg" id="baseSeg">
           <button
             type="button"
@@ -247,7 +250,7 @@ export function LeftPanel({
           </button>
         </div>
         <p className="muted small">
-          {type === 'apparel' ? 'Gilet zippé' : 'Gant de boxe'} : {spec.zones.map((zone) => zone.label).join(', ')}.
+          {garmentName(spec, type)} : {spec.zones.filter((zone) => zoneInUse(spec, zone.id)).map((zone) => zone.label).join(', ')}.
         </p>
       </section>
 
@@ -281,7 +284,7 @@ export function LeftPanel({
         <h2>Ajuster</h2>
         <p className="hint">Cliquez une partie du produit dans la vue, ou choisissez-la ci-dessous.</p>
         <div id="zones">
-          {spec.zones.map((zone) => (
+          {spec.zones.filter((zone) => zoneInUse(spec, zone.id)).map((zone) => (
             <ZoneEditor
               key={zone.id}
               zone={zone}

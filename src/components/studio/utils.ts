@@ -1,6 +1,7 @@
 import type { HexColor, ProductType, SpecsTable } from '@/types/famal-spec';
 import { BASES, COLORS, KEYWORDS, MATERIALS, MATERIAL_TERMS, ZONE_ALIASES } from './data';
 import { defaultGarmentOptions, pocketDefaults } from './garment-options';
+import { garmentEntry } from './catalogue';
 import type { ClosureFinish, ClosureType, CollarStyle, PocketFormat, PocketLevel, PocketSide } from './garment-options';
 import type { MaterialPreset } from '@/types/famal-spec';
 import type { CommandPatch, StudioSpec, StudioZone } from './types';
@@ -276,4 +277,94 @@ export function materialsFor(zoneId: string): MaterialPreset[] {
     default:
       return [...MATERIALS];
   }
+}
+
+/**
+ * Applique un vêtement du catalogue sur la base 3D : col, fermeture, poches, proportions et noms des zones.
+ * Les couleurs et matières déjà choisies sont gardées.
+ */
+export function applyGarmentPreset(spec: StudioSpec, kind: string): StudioSpec {
+  const entry = garmentEntry(kind);
+  if (!entry?.base || entry.base !== 'apparel') return spec;
+  const preset = entry.preset ?? { options: {} };
+  const base = BASES.apparel;
+  const sliders = base.sliders.map((slider) => ({
+    ...slider,
+    value: preset.sliders?.[slider.id] ?? slider.value,
+  }));
+  const zones = base.zones.map((zone) => {
+    const current = spec.zones.find((item) => item.id === zone.id);
+    return {
+      ...zone,
+      ...(current ? { hex: current.hex, material: current.material } : {}),
+      label: preset.zoneLabels?.[zone.id] ?? zone.label,
+    };
+  });
+  const garment = {
+    ...defaultGarmentOptions(),
+    ...preset.options,
+    pockets: (preset.options.pockets ?? defaultGarmentOptions().pockets).map((pocket) => ({ ...pocket })),
+    kind,
+  };
+  // Sweat, t-shirt… : coutures ton sur ton, comme sur un vrai vêtement en maille.
+  if (kind !== 'gilet_zippe') {
+    const body = zones.find((zone) => zone.id === 'corps');
+    const seam = zones.find((zone) => zone.id === 'couture');
+    if (body && seam) seam.hex = tonalSeam(body.hex);
+  }
+  const next: StudioSpec = { zones, sliders, garment };
+  return garment.finish === 'assorti' ? applyFinish(next, 'assorti') : next;
+}
+
+/** Zones réellement présentes : pas de « Zip » sur un sweat sans fermeture, par exemple. */
+export function zoneInUse(spec: StudioSpec, zoneId: string): boolean {
+  const garment = spec.garment;
+  if (!garment) return true;
+  const pockets = garment.pockets.filter((pocket) => pocket.visible);
+  if (zoneId === 'zip') return garment.closure === 'zip' || garment.closure === 'demi_zip';
+  if (zoneId === 'poches') return pockets.length > 0;
+  if (zoneId === 'boutons') {
+    return garment.closure === 'boutons'
+      || garment.collar === 'montant'
+      || pockets.some((pocket) => pocket.format === 'plaquee' || pocket.format === 'poitrine');
+  }
+  return true;
+}
+
+/** Parts de couleur d'une photo (fond clair et noirs ignorés), de la plus présente à la moins présente. */
+export function colorShares(image: HTMLImageElement): { hex: HexColor; share: number }[] {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 48;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Impossible de créer le canevas pour analyser la photo.');
+  context.drawImage(image, 0, 0, 48, 48);
+  const pixels = context.getImageData(0, 0, 48, 48).data;
+  const bins = new Map<string, { count: number; sum: number[] }>();
+  let total = 0;
+  for (let index = 0; index < pixels.length; index += 4) {
+    if (pixels[index + 3] < 200) continue;
+    const color = [pixels[index], pixels[index + 1], pixels[index + 2]];
+    const luminance = (color[0] + color[1] + color[2]) / 3;
+    if (luminance > 235 || luminance < 25) continue;
+    const key = color.map((value) => Math.round(value / 32)).join(',');
+    const entry = bins.get(key) ?? { count: 0, sum: [0, 0, 0] };
+    entry.count += 1;
+    entry.sum = entry.sum.map((value, channel) => value + color[channel]);
+    bins.set(key, entry);
+    total += 1;
+  }
+  return [...bins.values()]
+    .sort((left, right) => right.count - left.count)
+    .map(({ count, sum }) => ({
+      // Couleur moyenne du groupe (plus fidèle que le centre de la case).
+      hex: `#${sum.map((value) => Math.round(value / count).toString(16).padStart(2, '0')).join('')}` as HexColor,
+      share: total ? count / total : 0,
+    }));
+}
+
+/** Couleur de fil ton sur ton : la couleur du tissu, un peu plus sombre. */
+export function tonalSeam(hex: HexColor): HexColor {
+  const value = Number.parseInt(hex.slice(1), 16);
+  const channel = (shift: number) => Math.round(((value >> shift) & 255) * 0.8);
+  return `#${[16, 8, 0].map((shift) => channel(shift).toString(16).padStart(2, '0')).join('')}` as HexColor;
 }

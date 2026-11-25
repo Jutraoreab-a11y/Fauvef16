@@ -27,6 +27,8 @@ export interface PocketSpec {
 }
 
 export interface GarmentOptions {
+  /** Vêtement du catalogue (ex. « gilet_zippe », « sweat_capuche ») : enregistré avec le modèle. */
+  kind?: string;
   collar: CollarStyle;
   pockets: PocketSpec[];
   closure: ClosureType;
@@ -114,6 +116,8 @@ export function garmentBottomFromLength(longueur: number): number {
 export function collarHeightFrom(style: CollarStyle, slider: number): number {
   if (style === 'rond') return 0.05 + slider * 0.0006;
   if (style === 'bord_cote') return 0.08 + slider * 0.0015;
+  // Capuche : simple bande d'encolure, la capuche commence juste au-dessus.
+  if (style === 'capuche') return 0.06;
   return 0.12 + slider * 0.0035;
 }
 

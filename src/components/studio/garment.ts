@@ -62,6 +62,38 @@ const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 const lerp = (from: number, to: number, t: number) => from + (to - from) * t;
 const smooth = (t: number) => t * t * (3 - 2 * t);
 
+// ---------------------------------------------------------------------------
+// Bruit doux et déterministe : sert à dessiner des plis irréguliers (même résultat à chaque rendu).
+// ---------------------------------------------------------------------------
+function hash2(x: number, y: number): number {
+  const h = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return h - Math.floor(h);
+}
+
+function valueNoise(x: number, y: number): number {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const xf = smooth(x - xi);
+  const yf = smooth(y - yi);
+  const top = lerp(hash2(xi, yi), hash2(xi + 1, yi), xf);
+  const bottom = lerp(hash2(xi, yi + 1), hash2(xi + 1, yi + 1), xf);
+  return lerp(top, bottom, yf) * 2 - 1;
+}
+
+/** Plis de drapé du corps : verticaux sur les côtés et le dos, obliques sous les bras, devant lisse. */
+function bodyFolds(theta: number, y: number, bottom: number): number {
+  const fromFront = Math.abs(Math.atan2(Math.sin(theta - FRONT), Math.cos(theta - FRONT)));
+  const sides = smooth(clamp01((fromFront - 0.55) / 0.7));
+  const below = smooth(clamp01((0.55 - y) / 0.5)) * smooth(clamp01((y - (bottom + 0.16)) / 0.25));
+  const warp = valueNoise(theta * 1.6, y * 1.4) * 2.2;
+  const drape = Math.sin(theta * 9 + warp) * 0.5 + valueNoise(theta * 4.5, y * 2.2) * 0.5;
+  // Sous les bras : quelques plis obliques qui partent de l'emmanchure.
+  const side = Math.min(Math.abs(Math.sin(theta)), 1);
+  const underarm = (1 - side) * smooth(clamp01((y - 0.05) / 0.3)) * smooth(clamp01((0.62 - y) / 0.2));
+  const diagonal = Math.sin(y * 26 + Math.cos(theta) * 6 + valueNoise(theta * 3, y * 3) * 2);
+  return 0.011 * sides * below * drape + 0.008 * underarm * diagonal;
+}
+
 function profileAt(y: number): Section {
   const rows = TORSO_PROFILE;
   if (y <= rows[0][0]) return { a: rows[0][1], b: rows[0][2] };
@@ -80,7 +112,8 @@ function profileAt(y: number): Section {
 /** Pente d'épaule : de la ligne d'épaule jusqu'à la base du cou. */
 function dome(y: number, shoulder: Section, neck: Section): Section {
   const s = clamp01((y - BODY.shoulderY) / (BODY.neckY - BODY.shoulderY));
-  const p = 2.2;
+  // < 2 : épaules en pente douce plutôt que carrées.
+  const p = 1.9;
   const f = Math.pow(1 - Math.pow(s, p), 1 / p);
   return { a: lerp(neck.a, shoulder.a, f), b: lerp(neck.b, shoulder.b, f) };
 }
@@ -122,7 +155,21 @@ export function garmentSectionFn(values: GarmentValues): SectionFn {
   };
   const shoulder = body(BODY.shoulderY);
   const neck = { a: BODY.neck.a + 0.045, b: BODY.neck.b + 0.045 };
-  return (y) => (y <= BODY.shoulderY ? body(y) : dome(y, shoulder, neck));
+  const bottom = garmentBottomFromLength(values.longueur);
+  // Bas du vêtement : le bord-côte resserre, le tissu juste au-dessus « blouse » (gonfle un peu).
+  const gather = (y: number) => {
+    const rel = y - bottom;
+    if (rel >= 0.45) return 1;
+    const rise = smooth(clamp01((rel - 0.1) / 0.09));
+    const bulge = Math.sin(Math.PI * clamp01((rel - 0.12) / 0.32)) * (0.018 + 0.03 * boxyT);
+    return lerp(0.955, 1, rise) + bulge;
+  };
+  return (y) => {
+    if (y > BODY.shoulderY) return dome(y, shoulder, neck);
+    const section = body(y);
+    const k = gather(y);
+    return { a: section.a * k, b: section.b * k };
+  };
 }
 
 export function garmentBottom(values: GarmentValues): number {
@@ -163,6 +210,8 @@ interface SurfaceOptions {
   cols?: number;
   offset?: number;
   exponent?: number;
+  /** Relief ajouté à la surface (plis), en unités de scène, selon l'angle et la hauteur. */
+  displace?: (theta: number, y: number) => number;
 }
 
 /** Surface balayée : une section par hauteur, de y0 à y1. */
@@ -174,6 +223,7 @@ function sweptSurface(fn: SectionFn, options: SurfaceOptions): THREE.BufferGeome
     cols = 72,
     offset = 0,
     exponent = TORSO_EXPONENT,
+    displace,
   } = options;
   const positions: number[] = [];
   const uvs: number[] = [];
@@ -184,9 +234,10 @@ function sweptSurface(fn: SectionFn, options: SurfaceOptions): THREE.BufferGeome
     const section = fn(y);
     for (let col = 0; col <= cols; col += 1) {
       const theta = lerp(theta0, theta1, col / cols);
-      const point = sectionPoint(section, theta, offset, exponent);
+      const point = sectionPoint(section, theta, offset + (displace ? displace(theta, y) : 0), exponent);
       positions.push(point.x, y, point.z);
-      uvs.push((theta - theta0) / (2 * Math.PI), y / 3.4);
+      // UV en unités de scène : la maille garde la même taille sur toutes les pièces.
+      uvs.push(((theta - theta0) / (2 * Math.PI)) * 3.6, y);
     }
   }
   for (let row = 0; row < rows; row += 1) {
@@ -211,6 +262,7 @@ function taperedTube(
   samples: [number, number][],
   depthScale = 0.92,
   segments = 40,
+  ripple?: (t: number, phi: number) => number,
 ): THREE.BufferGeometry {
   const axis = direction.clone().normalize();
   const side = new THREE.Vector3().crossVectors(axis, new THREE.Vector3(0, 0, 1)).normalize();
@@ -223,11 +275,13 @@ function taperedTube(
     const center = origin.clone().addScaledVector(axis, t);
     for (let index = 0; index <= segments; index += 1) {
       const phi = (index / segments) * Math.PI * 2;
+      // Le relief s'annule à la couture (phi = 0 et 2π) pour que le tube reste fermé.
+      const r = radius + (ripple && radius > 0.01 ? ripple(t, phi) : 0);
       const point = center.clone()
-        .addScaledVector(side, Math.cos(phi) * radius)
-        .addScaledVector(depth, Math.sin(phi) * radius * depthScale);
+        .addScaledVector(side, Math.cos(phi) * r)
+        .addScaledVector(depth, Math.sin(phi) * r * depthScale);
       positions.push(point.x, point.y, point.z);
-      uvs.push(index / segments, t * 0.9);
+      uvs.push((index / segments) * 1.15, t);
     }
   });
   for (let row = 0; row < samples.length - 1; row += 1) {
@@ -268,7 +322,7 @@ export function armFrame(side: -1 | 1) {
 }
 
 /** Courbe fermée (piqûre) passant par des points, rendue en fil fin. */
-function stitch(points: THREE.Vector3[], closed: boolean, radius = 0.0055) {
+function stitch(points: THREE.Vector3[], closed: boolean, radius = 0.0038) {
   const curve = new THREE.CatmullRomCurve3(points, closed, 'catmullrom', 0.05);
   return new THREE.TubeGeometry(curve, Math.max(24, points.length * 3), radius, 6, closed);
 }
@@ -311,7 +365,8 @@ export function sleeveLayout(rawValues: Record<string, number>, side: -1 | 1): S
   const arm = armFrame(side);
   const wrist = arm.joint.clone().addScaledVector(arm.direction, BODY.wristT);
   // Tête de manche rentrée sous la ligne d'épaule : pas de bosse au-dessus de l'emmanchure.
-  const joint = new THREE.Vector3(side * (shoulder.a - 0.09), BODY.armJoint.y, 0);
+  // Plus rentrée sous l'épaule : la manche prolonge la carrure au lieu de dépasser comme une épaulette.
+  const joint = new THREE.Vector3(side * (shoulder.a - 0.12), BODY.armJoint.y, 0);
   const direction = wrist.clone().sub(joint);
   const fullLength = direction.length();
   direction.normalize();
@@ -343,7 +398,7 @@ function surfaceQuad(fn: SectionFn, corners: [number, number][], offset: number,
       const [dx, y] = quadAt(corners, col / cols, row / rows);
       const point = surfacePoint(fn, FRONT - dx, y, offset);
       positions.push(point.x, point.y, point.z);
-      uvs.push(dx * 0.5, y / 3.4);
+      uvs.push(dx * 0.6, y);
     }
   }
   for (let row = 0; row < rows; row += 1) {
@@ -385,26 +440,60 @@ function quadOutline(fn: SectionFn, corners: [number, number][], offset: number,
 }
 
 /** Capuche : coque autour de la tête, ouverte devant, posée sur la bande d'encolure. */
-function hoodGeometry(base: Section, baseY: number): THREE.BufferGeometry {
-  const height = BODY.headY + 0.4 - baseY;
-  const opening = 0.75;
+function hoodGeometry(base: Section, baseY: number): { geometry: THREE.BufferGeometry; edge: THREE.Vector3[] } {
+  const height = BODY.headY + 0.32 - baseY;
   const hoodSection: SectionFn = (y) => {
     const s = clamp01((y - baseY) / height);
     const swell = Math.sin(Math.min(1, s * 1.6) * Math.PI / 2);
-    const close = Math.pow(1 - Math.pow(s, 2.6), 1 / 2.6);
-    const a = lerp(base.a, 0.31, swell) * close;
-    const b = lerp(base.b, 0.35, swell) * close;
-    return { a: Math.max(a, 0.002), b: Math.max(b, 0.002) };
+    // Sommet arrondi (quart de cercle) plutôt qu'en pointe.
+    const close = Math.sqrt(Math.max(0, 1 - Math.pow(s, 2.2)));
+    return {
+      a: Math.max(lerp(base.a, 0.3, swell) * close, 0.002),
+      b: Math.max(lerp(base.b, 0.34, swell) * close, 0.002),
+    };
   };
-  return sweptSurface(hoodSection, {
-    y0: baseY - 0.005,
-    y1: baseY + height,
-    rows: 40,
-    theta0: FRONT + opening,
-    theta1: FRONT + Math.PI * 2 - opening,
-    cols: 56,
-    exponent: 2,
-  }).translate(0, 0, -0.03);
+  // Ouverture du visage : nulle au cou et au sommet, la plus large à hauteur du visage.
+  const opening = (s: number) => 0.95 * Math.sin(Math.PI * clamp01((s - 0.06) / 0.82));
+  const rows = 44;
+  const cols = 56;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const leftEdge: THREE.Vector3[] = [];
+  const rightEdge: THREE.Vector3[] = [];
+  for (let row = 0; row <= rows; row += 1) {
+    const s = row / rows;
+    const y = baseY - 0.005 + s * height;
+    const section = hoodSection(y);
+    const gap = opening(s);
+    for (let col = 0; col <= cols; col += 1) {
+      const u = col / cols;
+      const theta = FRONT + gap + u * (Math.PI * 2 - 2 * gap);
+      // Quelques plis souples à l'arrière de la capuche, nuls sur les bords du visage.
+      const back = Math.sin(Math.PI * u);
+      const fold = 0.008 * back * Math.sin(theta * 7 + valueNoise(theta * 2, y * 3) * 2) * Math.sin(Math.PI * s);
+      const point = sectionPoint(section, theta, fold, 2);
+      positions.push(point.x, y, point.z - 0.03);
+      uvs.push(u * 2, y);
+      if (col === 0) rightEdge.push(new THREE.Vector3(point.x, y, point.z - 0.03));
+      if (col === cols) leftEdge.push(new THREE.Vector3(point.x, y, point.z - 0.03));
+    }
+  }
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const a = row * (cols + 1) + col;
+      const b = a + cols + 1;
+      indices.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  // Contour de l'ouverture du visage (montée d'un côté, descente de l'autre) pour le bord roulé.
+  const edge = [...rightEdge, ...leftEdge.reverse()].filter((_, index) => index % 2 === 0);
+  return { geometry, edge };
 }
 
 export function vestParts(
@@ -423,10 +512,22 @@ export function vestParts(
   };
 
   // Corps : enveloppe continue du bas jusqu'à l'encolure, épaules comprises.
-  add('corps', 'body', sweptSurface(section, { y0: bottom + 0.1, y1: top, rows: 96 }));
+  add('corps', 'body', sweptSurface(section, {
+    y0: bottom + 0.1,
+    y1: top,
+    rows: 150,
+    cols: 128,
+    displace: (theta, y) => bodyFolds(theta, y, bottom),
+  }));
 
   // Bord-côte bas : toujours juste au-dessus du corps (sinon il passe dessous par endroits).
-  add('bords', 'ribbing', sweptSurface(section, { y0: bottom, y1: bottom + 0.13, rows: 6, offset: 0.008 }));
+  add('bords', 'ribbing', sweptSurface(section, { y0: bottom, y1: bottom + 0.13, rows: 8, cols: 128, offset: 0.008 }));
+  // Bord roulé : l'ourlet a une épaisseur, il n'est pas coupé net comme une feuille.
+  const hemEdge: THREE.Vector3[] = [];
+  for (let index = 0; index < 96; index += 1) {
+    hemEdge.push(surfacePoint(section, (index / 96) * Math.PI * 2, bottom + 0.004, 0.002));
+  }
+  add('bords', 'hem-edge', stitch(hemEdge, true, 0.011));
 
   // Col : la bande posée sur l'encolure change selon le style ; la capuche y ajoute son volume.
   const collarBase = section(top);
@@ -437,7 +538,11 @@ export function vestParts(
   };
   const collarTop = top - 0.03 + collarHeight;
   add('col', 'collar', sweptSurface(collarSection, { y0: top - 0.03, y1: collarTop, rows: 8, exponent: 2.1 }));
-  if (options.collar === 'capuche') add('col', 'hood', hoodGeometry(collarSection(collarTop), collarTop));
+  if (options.collar === 'capuche') {
+    const hood = hoodGeometry(collarSection(collarTop), collarTop);
+    add('col', 'hood', hood.geometry);
+    add('col', 'hood-edge', stitch(hood.edge, false, 0.013));
+  }
 
   // Manches : montées sur l'épaule du vêtement, elles s'arrêtent entre le mi-bras et le poignet.
   ([-1, 1] as const).forEach((side) => {
@@ -446,20 +551,47 @@ export function vestParts(
     const { joint, direction, sleeveLength, radiusAt } = sleeve;
     const cuffStart = sleeveLength - 0.12;
 
-    const capHeight = 0.1;
+    const capHeight = 0.16;
+    // Le tissu se resserre dans le poignet et « s'empile » juste au-dessus (fronces).
+    const sleeveRadius = (t: number) => {
+      const toCuff = clamp01((t - (cuffStart - 0.06)) / 0.08);
+      const stack = Math.sin(Math.PI * clamp01((t - (cuffStart - 0.32)) / 0.3)) * 0.016;
+      return lerp(radiusAt(t) + stack, sleeve.cuffRadius + 0.004, smooth(toCuff));
+    };
     const sleeveSamples: [number, number][] = capSamples(-capHeight, capHeight, radiusAt(0));
-    for (let index = 1; index <= 18; index += 1) {
-      const t = (index / 18) * (cuffStart + 0.02);
-      sleeveSamples.push([t, radiusAt(t)]);
+    for (let index = 1; index <= 60; index += 1) {
+      const t = (index / 60) * (cuffStart + 0.02);
+      sleeveSamples.push([t, sleeveRadius(t)]);
     }
-    add('manches', `${label}-sleeve`, taperedTube(joint, direction, sleeveSamples));
+    const elbow = sleeveLength * 0.5;
+    const sleeveRipple = (t: number, phi: number) => {
+      // Plis de coude (sur l'intérieur du bras) et fronces au-dessus du poignet.
+      const atElbow = Math.exp(-(((t - elbow) / 0.16) ** 2)) * (0.6 + 0.4 * Math.cos(phi - Math.PI));
+      const atCuff = smooth(clamp01((t - (cuffStart - 0.34)) / 0.2)) * (1 - smooth(clamp01((t - (cuffStart - 0.02)) / 0.04)));
+      const wave = Math.sin(t * 38 + Math.sin(phi * 2 + t * 4) * 2.2 + valueNoise(phi * 1.5, t * 3) * 1.5);
+      const twist = Math.sin(phi * 3 + t * 9 + side) * 0.5;
+      return Math.sin(phi / 2) * (0.011 * atElbow * wave + 0.012 * atCuff * (wave * 0.7 + twist * 0.3));
+    };
+    add('manches', `${label}-sleeve`, taperedTube(joint, direction, sleeveSamples, 0.92, 72, sleeveRipple));
 
     // Poignet en bord-côte, à la longueur choisie.
     add('bords', `${label}-cuff`, taperedTube(joint, direction, [
-      [cuffStart, sleeve.cuffRadius + 0.006],
+      [cuffStart, sleeve.cuffRadius + 0.008],
+      [cuffStart + 0.03, sleeve.cuffRadius + 0.006],
       [cuffStart + 0.06, sleeve.cuffRadius],
       [sleeveLength + 0.01, sleeve.cuffRadius - 0.004],
-    ]));
+    ], 0.92, 72));
+    // Bord roulé du poignet.
+    const cuffEnd = joint.clone().addScaledVector(direction, sleeveLength + 0.004);
+    const cuffSide = new THREE.Vector3().crossVectors(direction, new THREE.Vector3(0, 0, 1)).normalize();
+    const cuffDepth = new THREE.Vector3().crossVectors(cuffSide, direction).normalize();
+    const cuffRing: THREE.Vector3[] = [];
+    for (let index = 0; index < 40; index += 1) {
+      const phi = (index / 40) * Math.PI * 2;
+      const r = sleeve.cuffRadius - 0.006;
+      cuffRing.push(cuffEnd.clone().addScaledVector(cuffSide, Math.cos(phi) * r).addScaledVector(cuffDepth, Math.sin(phi) * r * 0.92));
+    }
+    add('bords', `${label}-cuff-edge`, stitch(cuffRing, true, 0.009));
 
     // Piqûre d'emmanchure, autour du haut de la manche.
     const ringT = 0.03;

@@ -1,5 +1,7 @@
 import type { ProductType } from '@/types/famal-spec';
 import { BASES } from './data';
+import type { GarmentOptions } from './garment-options';
+import type { StudioSpec } from './types';
 
 export type GarmentCategory = 'haut' | 'bas' | 'manteau' | 'equipement';
 
@@ -11,6 +13,14 @@ export interface GarmentEntry {
   base: ProductType | null;
   /** Pièces connues pour ce vêtement. */
   pieces: string[];
+  /** Réglages de départ sur la base 3D : col, fermeture, poches, proportions, noms des zones. */
+  preset?: GarmentPreset;
+}
+
+export interface GarmentPreset {
+  options: Partial<GarmentOptions>;
+  sliders?: Record<string, number>;
+  zoneLabels?: Record<string, string>;
 }
 
 export const GARMENT_CATEGORIES: { id: GarmentCategory; label: string }[] = [
@@ -36,13 +46,24 @@ export const GARMENTS: GarmentEntry[] = [
     category: 'manteau',
     base: 'apparel',
     pieces: zoneLabels('apparel'),
+    preset: { options: {} },
   },
   {
     id: 'sweat_capuche',
     label: 'Sweat à capuche',
     category: 'haut',
-    base: null,
-    pieces: ['Capuche', 'Cordon de capuche', 'Corps', 'Manches', 'Bords-côtes', 'Poche kangourou', 'Coutures apparentes'],
+    base: 'apparel',
+    pieces: ['Capuche', 'Devant', 'Dos', 'Manches', 'Poignets et bas en bord-côte', 'Poche kangourou', 'Coutures apparentes'],
+    preset: {
+      options: {
+        collar: 'capuche',
+        closure: 'aucune',
+        finish: 'assorti',
+        pockets: [{ id: 'pocket-1', format: 'kangourou', side: 'centre', level: 'bas', offset: 0, visible: true }],
+      },
+      sliders: { boxy: 65, longueur: 45, manches: 100, col_hauteur: 30 },
+      zoneLabels: { col: 'Capuche', poches: 'Poche kangourou', bords: 'Bords-côtes (poignets et bas)' },
+    },
   },
   {
     id: 't_shirt',
@@ -87,3 +108,16 @@ export const GARMENTS: GarmentEntry[] = [
     pieces: ['Coque', 'Sangles', 'Rembourrage', 'Fermetures'],
   },
 ];
+
+export function garmentEntry(id: string): GarmentEntry | undefined {
+  return GARMENTS.find((item) => item.id === id);
+}
+
+/** Vêtement du catalogue affiché : celui enregistré dans la spec, sinon la base du type. */
+export function garmentKindOf(spec: StudioSpec, type: 'apparel' | 'gear'): string {
+  return spec.garment?.kind ?? (type === 'apparel' ? 'gilet_zippe' : 'gant_boxe');
+}
+
+export function garmentName(spec: StudioSpec, type: 'apparel' | 'gear'): string {
+  return garmentEntry(garmentKindOf(spec, type))?.label ?? BASES[type].name;
+}
