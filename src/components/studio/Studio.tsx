@@ -5,7 +5,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WebGLRenderer } from 'three';
 import type { HexColor, ProductType } from '@/types/famal-spec';
 import { AssistantPanel, LeftPanel } from './StudioPanels';
-import PatternView from './PatternView';
 import { ModelsDrawer } from './ModelsDrawer';
 import { modelStore, type HistoryEntry, type ModelDraft, type SavedAsset } from '@/lib/models-store';
 import {
@@ -33,6 +32,12 @@ import type {
 const StudioCanvas = dynamic(() => import('./StudioCanvas'), {
   ssr: false,
   loading: () => <div className="canvas-loading" aria-label="Chargement du rendu 3D" />,
+});
+
+// Le patron s'appuie sur la géométrie 3D (three.js) : chargé à part, comme la vue 3D.
+const PatternView = dynamic(() => import('./PatternView'), {
+  ssr: false,
+  loading: () => <div className="pattern-box" aria-label="Chargement du patron" />,
 });
 
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -834,6 +839,7 @@ export default function Studio() {
                 spec={spec}
                 selected={selected}
                 onSelect={(id) => setSelected(id)}
+                onSliderChange={handleSliderChange}
               />
             )}
             <div className="ref-box">

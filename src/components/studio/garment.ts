@@ -55,7 +55,7 @@ const TORSO_PROFILE: [number, number, number][] = [
   [0.74, 0.58, 0.31],
 ];
 
-const TORSO_EXPONENT = 2.3; // > 2 : section légèrement « carrée », plus proche d'un buste
+export const TORSO_EXPONENT = 2.3; // > 2 : section légèrement « carrée », plus proche d'un buste
 const FRONT = Math.PI / 2; // angle de la face avant (+z)
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
@@ -94,6 +94,8 @@ export interface GarmentValues {
   boxy: number;
   longueur: number;
   col_hauteur: number;
+  /** Longueur des manches : 0 = courtes (mi-bras), 100 = au poignet. */
+  manches: number;
 }
 
 export function readGarmentValues(values: Record<string, number>): GarmentValues {
@@ -101,6 +103,7 @@ export function readGarmentValues(values: Record<string, number>): GarmentValues
     boxy: values.boxy ?? 40,
     longueur: values.longueur ?? 55,
     col_hauteur: values.col_hauteur ?? 30,
+    manches: values.manches ?? 100,
   };
 }
 
@@ -256,7 +259,7 @@ function capSamples(tStart: number, height: number, radius: number, steps = 8, r
   return samples;
 }
 
-const armRadius = (t: number) => lerp(0.125, 0.068, clamp01(t / BODY.wristT));
+export const armRadius = (t: number) => lerp(0.125, 0.068, clamp01(t / BODY.wristT));
 
 export function armFrame(side: -1 | 1) {
   const joint = new THREE.Vector3(side * BODY.armJoint.x, BODY.armJoint.y, 0);
@@ -284,6 +287,40 @@ function snap(position: THREE.Vector3, normal: THREE.Vector3) {
   geometry.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal));
   geometry.translate(position.x, position.y, position.z);
   return geometry;
+}
+
+export interface SleeveLayout {
+  joint: THREE.Vector3;
+  direction: THREE.Vector3;
+  /** Distance de l'emmanchure au poignet. */
+  fullLength: number;
+  /** Longueur réelle de la manche (réglage « Longueur des manches »). */
+  sleeveLength: number;
+  /** Part du bras couverte : 0.3 (mi-bras) à 1 (poignet). */
+  fraction: number;
+  radiusAt: (t: number) => number;
+  cuffRadius: number;
+}
+
+/** Manche d'un côté (-1 gauche, 1 droite vu de face) : partagée par la 3D et le patron à plat. */
+export function sleeveLayout(rawValues: Record<string, number>, side: -1 | 1): SleeveLayout {
+  const values = readGarmentValues(rawValues);
+  const section = garmentSectionFn(values);
+  const boxyT = clamp01(values.boxy / 100);
+  const shoulder = section(BODY.shoulderY);
+  const arm = armFrame(side);
+  const wrist = arm.joint.clone().addScaledVector(arm.direction, BODY.wristT);
+  // Tête de manche rentrée sous la ligne d'épaule : pas de bosse au-dessus de l'emmanchure.
+  const joint = new THREE.Vector3(side * (shoulder.a - 0.09), BODY.armJoint.y, 0);
+  const direction = wrist.clone().sub(joint);
+  const fullLength = direction.length();
+  direction.normalize();
+  const fraction = 0.3 + 0.7 * clamp01(values.manches / 100);
+  const sleeveLength = fullLength * fraction;
+  const sleeveEase = 0.06 + boxyT * 0.035;
+  const radiusAt = (t: number) => armRadius((t / fullLength) * BODY.wristT) + lerp(sleeveEase, 0.045, clamp01(t / fullLength));
+  const cuffRadius = armRadius(fraction * BODY.wristT) + 0.032;
+  return { joint, direction, fullLength, sleeveLength, fraction, radiusAt, cuffRadius };
 }
 
 /** Bilinéaire entre 4 coins (dx, y) : [haut-gauche, haut-droit, bas-droit, bas-gauche]. */
@@ -402,20 +439,12 @@ export function vestParts(
   add('col', 'collar', sweptSurface(collarSection, { y0: top - 0.03, y1: collarTop, rows: 8, exponent: 2.1 }));
   if (options.collar === 'capuche') add('col', 'hood', hoodGeometry(collarSection(collarTop), collarTop));
 
-  // Manches : montées sur l'épaule du vêtement, elles finissent toujours au poignet du mannequin.
-  const shoulder = section(BODY.shoulderY);
+  // Manches : montées sur l'épaule du vêtement, elles s'arrêtent entre le mi-bras et le poignet.
   ([-1, 1] as const).forEach((side) => {
     const label = side < 0 ? 'left' : 'right';
-    const arm = armFrame(side);
-    const wrist = arm.joint.clone().addScaledVector(arm.direction, BODY.wristT);
-    // Tête de manche rentrée sous la ligne d'épaule : pas de bosse au-dessus de l'emmanchure.
-    const joint = new THREE.Vector3(side * (shoulder.a - 0.09), BODY.armJoint.y, 0);
-    const direction = wrist.clone().sub(joint);
-    const length = direction.length();
-    direction.normalize();
-    const sleeveEase = 0.06 + boxyT * 0.035;
-    const radiusAt = (t: number) => armRadius((t / length) * BODY.wristT) + lerp(sleeveEase, 0.045, clamp01(t / length));
-    const cuffStart = length - 0.12;
+    const sleeve = sleeveLayout(rawValues, side);
+    const { joint, direction, sleeveLength, radiusAt } = sleeve;
+    const cuffStart = sleeveLength - 0.12;
 
     const capHeight = 0.1;
     const sleeveSamples: [number, number][] = capSamples(-capHeight, capHeight, radiusAt(0));
@@ -425,12 +454,11 @@ export function vestParts(
     }
     add('manches', `${label}-sleeve`, taperedTube(joint, direction, sleeveSamples));
 
-    // Poignet en bord-côte.
-    const cuffRadius = armRadius(BODY.wristT) + 0.032;
+    // Poignet en bord-côte, à la longueur choisie.
     add('bords', `${label}-cuff`, taperedTube(joint, direction, [
-      [cuffStart, cuffRadius + 0.006],
-      [cuffStart + 0.06, cuffRadius],
-      [length + 0.01, cuffRadius - 0.004],
+      [cuffStart, sleeve.cuffRadius + 0.006],
+      [cuffStart + 0.06, sleeve.cuffRadius],
+      [sleeveLength + 0.01, sleeve.cuffRadius - 0.004],
     ]));
 
     // Piqûre d'emmanchure, autour du haut de la manche.

@@ -23,6 +23,7 @@ export const BASES: Record<ProductType, StudioBase> = {
       { id: 'boxy', label: 'Ampleur', min: 0, max: 100, value: 40 },
       { id: 'longueur', label: 'Longueur', min: 0, max: 100, value: 55 },
       { id: 'col_hauteur', label: 'Hauteur du col', min: 0, max: 100, value: 30 },
+      { id: 'manches', label: 'Longueur des manches', min: 0, max: 100, value: 100 },
     ],
     specsTable: {
       sizes: ['S', 'M', 'L', 'XL'],
