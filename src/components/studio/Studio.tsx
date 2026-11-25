@@ -7,6 +7,8 @@ import type { HexColor, ProductType } from '@/types/famal-spec';
 import { AssistantPanel, LeftPanel } from './StudioPanels';
 import PatternView from './PatternView';
 import {
+  CLOSURE_FINISHES,
+  CLOSURE_TYPES,
   COLLAR_STYLES,
   MAX_POCKETS,
   POCKET_FORMATS,
@@ -17,7 +19,7 @@ import {
   type GarmentOptions,
 } from './garment-options';
 import { ASSET_SLOTS, BASES, MATERIALS } from './data';
-import { clamp, createInitialSpec, dominantColors, parseCommand, parseGarmentCommand, specsTableRows } from './utils';
+import { applyFinish, clamp, createInitialSpec, dominantColors, parseCommand, parseGarmentCommand, specsTableRows } from './utils';
 import type {
   ChatMessage,
   PipelineStepState,
@@ -211,10 +213,14 @@ export default function Studio() {
   };
 
   const handleColorChange = (id: string, value: HexColor) => {
-    setSpec((current) => ({
-      ...current,
-      zones: current.zones.map((zone) => zone.id === id ? { ...zone, hex: value } : zone),
-    }));
+    setSpec((current) => {
+      const next = {
+        ...current,
+        zones: current.zones.map((zone) => zone.id === id ? { ...zone, hex: value } : zone),
+      };
+      // Fermeture « assortie au tissu » : elle suit la couleur du corps.
+      return id === 'corps' && next.garment?.finish === 'assorti' ? applyFinish(next, 'assorti') : next;
+    });
   };
 
   const handleMaterialChange = (id: string, material: (typeof MATERIALS)[number]) => {
@@ -232,7 +238,12 @@ export default function Studio() {
   };
 
   const handleGarmentChange = (update: (current: GarmentOptions) => GarmentOptions) => {
-    setSpec((current) => (current.garment ? { ...current, garment: update(current.garment) } : current));
+    setSpec((current) => {
+      if (!current.garment) return current;
+      const garment = update(current.garment);
+      const next = { ...current, garment };
+      return garment.finish !== current.garment.finish ? applyFinish(next, garment.finish) : next;
+    });
   };
 
   const handleAssetRemove = (id: string) => {
@@ -295,6 +306,16 @@ export default function Studio() {
           slider.value = clamp(slider.value + patch.delta, slider.min, slider.max);
           lines.push(`${slider.label} : ${slider.value}`);
         }
+      } else if (patch.op === 'set_closure') {
+        if (nextSpec.garment) nextSpec.garment.closure = patch.closure;
+        lines.push(`Fermeture : ${labelOf(CLOSURE_TYPES, patch.closure).toLowerCase()}`);
+      } else if (patch.op === 'set_finish') {
+        if (nextSpec.garment) {
+          nextSpec.garment.finish = patch.finish;
+          const finished = applyFinish(nextSpec, patch.finish);
+          nextSpec.zones = finished.zones;
+        }
+        lines.push(`Finition : ${labelOf(CLOSURE_FINISHES, patch.finish).toLowerCase()}`);
       } else if (patch.op === 'set_collar') {
         if (nextSpec.garment) nextSpec.garment.collar = patch.style;
         lines.push(`Col : ${COLLAR_STYLES.find((style) => style.id === patch.style)?.label ?? patch.style}`);
@@ -356,7 +377,12 @@ export default function Studio() {
       }
     });
 
-    setSpec(nextSpec);
+    // Fermeture assortie : elle suit une nouvelle couleur du corps donnée à l'assistant.
+    const synced = nextSpec.garment?.finish === 'assorti'
+      && patches.some((patch) => patch.op === 'set_color' && patch.zone === 'corps')
+      ? applyFinish(nextSpec, 'assorti')
+      : nextSpec;
+    setSpec(synced);
     setAssets(nextAssets);
     setMessages((current) => [
       ...current,

@@ -1,4 +1,4 @@
-import type { CollarStyle, GarmentOptions, PocketFormat, PocketLevel, PocketSide } from './garment-options';
+import type { ClosureFinish, ClosureType, CollarStyle, GarmentOptions, PocketFormat, PocketLevel, PocketSide } from './garment-options';
 import type {
   AssetType,
   HexColor,
@@ -48,7 +48,9 @@ export type CommandPatch =
   | { op: 'add_pocket'; format: PocketFormat; side: PocketSide; level: PocketLevel }
   | { op: 'update_pockets'; format?: PocketFormat; side?: PocketSide; level?: PocketLevel }
   | { op: 'remove_pockets' }
-  | { op: 'show_pockets'; visible: boolean };
+  | { op: 'show_pockets'; visible: boolean }
+  | { op: 'set_closure'; closure: ClosureType }
+  | { op: 'set_finish'; finish: ClosureFinish };
 
 export interface StudioBase {
   name: string;

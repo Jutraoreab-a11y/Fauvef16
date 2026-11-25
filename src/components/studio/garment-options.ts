@@ -13,6 +13,8 @@ export type CollarStyle = 'montant' | 'rond' | 'capuche' | 'bord_cote';
 export type PocketFormat = 'plaquee' | 'poitrine' | 'passepoilee' | 'kangourou';
 export type PocketSide = 'gauche' | 'droite' | 'centre' | 'double';
 export type PocketLevel = 'poitrine' | 'milieu' | 'bas';
+export type ClosureType = 'zip' | 'demi_zip' | 'boutons' | 'aucune';
+export type ClosureFinish = 'metal' | 'noir_mat' | 'assorti';
 
 export interface PocketSpec {
   id: string;
@@ -27,6 +29,32 @@ export interface PocketSpec {
 export interface GarmentOptions {
   collar: CollarStyle;
   pockets: PocketSpec[];
+  closure: ClosureType;
+  finish: ClosureFinish;
+}
+
+export const CLOSURE_TYPES: { id: ClosureType; label: string }[] = [
+  { id: 'zip', label: 'Zip complet' },
+  { id: 'demi_zip', label: 'Demi-zip' },
+  { id: 'boutons', label: 'Boutons' },
+  { id: 'aucune', label: 'Sans' },
+];
+
+export const CLOSURE_FINISHES: { id: ClosureFinish; label: string }[] = [
+  { id: 'metal', label: 'Métal' },
+  { id: 'noir_mat', label: 'Noir mat' },
+  { id: 'assorti', label: 'Assorti au tissu' },
+];
+
+/** Bas du demi-zip, en hauteur de scène (poitrine). */
+export const HALF_ZIP_BOTTOM = 0.2;
+
+/** Hauteurs des boutons le long du milieu devant, du bas vers le haut. */
+export function buttonHeights(bottom: number, top: number): number[] {
+  const first = bottom + 0.3;
+  const last = top - 0.12;
+  const count = 5;
+  return Array.from({ length: count }, (_, index) => first + ((last - first) * index) / (count - 1));
 }
 
 export const COLLAR_STYLES: { id: CollarStyle; label: string }[] = [
@@ -64,6 +92,8 @@ export function defaultGarmentOptions(): GarmentOptions {
     pockets: [
       { id: 'pocket-1', format: 'plaquee', side: 'double', level: 'bas', offset: 0, visible: true },
     ],
+    closure: 'zip',
+    finish: 'metal',
   };
 }
 

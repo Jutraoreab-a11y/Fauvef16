@@ -1,6 +1,8 @@
 import type { ProductType } from '@/types/famal-spec';
 import {
   GARMENT_TOP,
+  HALF_ZIP_BOTTOM,
+  buttonHeights,
   collarHeightFrom,
   defaultGarmentOptions,
   garmentBottomFromLength,
@@ -106,8 +108,21 @@ export function apparelPattern(spec: StudioSpec): PatternPiece[] {
   });
   pieces.push({ zone: 'couture', kind: 'dash', d: seams.join(' ') });
 
-  // Le zip passe par-dessus les poches centrées, comme en 3D.
-  pieces.push({ zone: 'zip', kind: 'stroke', d: `M260,${round(152 - (options.collar === 'montant' ? collarPx : 0))} L260,470` });
+  // Fermeture : par-dessus les poches centrées, comme en 3D.
+  const zipTop = round(152 - (options.collar === 'montant' ? collarPx : 0));
+  if (options.closure === 'zip') {
+    pieces.push({ zone: 'zip', kind: 'stroke', d: `M260,${zipTop} L260,470` });
+  } else if (options.closure === 'demi_zip') {
+    const stop = toY(HALF_ZIP_BOTTOM);
+    pieces.push({ zone: 'zip', kind: 'stroke', d: `M260,${zipTop} L260,${stop}` });
+    pieces.push({ zone: 'zip', kind: 'fill', d: `M252,${stop - 2} h16 v5 h-16 Z` });
+  } else if (options.closure === 'boutons') {
+    pieces.push({ zone: 'corps', kind: 'fill', d: `M253,152 L267,152 L267,${toY(bottom + 0.13)} L253,${toY(bottom + 0.13)} Z` });
+    const circles = buttonHeights(bottom, GARMENT_TOP - 0.005)
+      .map((y) => `M254,${toY(y)} a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z`);
+    if (options.collar === 'montant') circles.push(`M254,${round(152 - collarPx * 0.5)} a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z`);
+    pieces.push({ zone: 'boutons', kind: 'fill', d: circles.join(' ') });
+  }
 
   return pieces;
 }

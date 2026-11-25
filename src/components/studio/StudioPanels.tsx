@@ -5,7 +5,8 @@ import type { ChangeEvent, DragEvent, FormEvent } from 'react';
 import type { HexColor, ProductType } from '@/types/famal-spec';
 import { CHIPS, MATERIALS } from './data';
 import { GARMENTS, GARMENT_CATEGORIES } from './catalogue';
-import { ComponentEditors } from './ComponentEditors';
+import { ColorMaterial, ComponentEditors } from './ComponentEditors';
+import { materialsFor } from './utils';
 import type { GarmentOptions } from './garment-options';
 import type {
   ChatMessage,
@@ -56,6 +57,7 @@ function isHexColor(value: string): value is HexColor {
 
 function ZoneEditor({
   zone,
+  spec,
   selected,
   advanced,
   onSelect,
@@ -63,6 +65,7 @@ function ZoneEditor({
   onMaterialChange,
 }: {
   zone: StudioSpec['zones'][number];
+  spec: StudioSpec;
   selected: boolean;
   advanced: boolean;
   onSelect: () => void;
@@ -80,6 +83,15 @@ function ZoneEditor({
         <strong>{zone.label}</strong>
         <span className="muted">{zone.material}</span>
       </button>
+      {selected ? (
+        // Zone sélectionnée (clic dans la 3D, le patron ou la liste) : palette, HEX et matières adaptées.
+        <ColorMaterial
+          zoneId={zone.id}
+          spec={spec}
+          onColorChange={(_, value) => onColorChange(value)}
+          onMaterialChange={(_, material) => onMaterialChange(material)}
+        />
+      ) : (
       <div className="zone-row">
         <input
           type="color"
@@ -110,11 +122,12 @@ function ZoneEditor({
             if (material) onMaterialChange(material);
           }}
         >
-          {MATERIALS.map((material) => (
+          {(materialsFor(zone.id).includes(zone.material) ? materialsFor(zone.id) : [zone.material, ...materialsFor(zone.id)]).map((material) => (
             <option key={material} value={material}>{material}</option>
           ))}
         </select>
       </div>
+      )}
     </div>
   );
 }
@@ -272,6 +285,7 @@ export function LeftPanel({
             <ZoneEditor
               key={zone.id}
               zone={zone}
+              spec={spec}
               selected={selected === zone.id}
               advanced={advanced}
               onSelect={() => onSelectZone(zone.id)}

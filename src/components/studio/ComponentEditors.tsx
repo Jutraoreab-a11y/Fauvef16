@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { HexColor } from '@/types/famal-spec';
 import { COLORS, MATERIALS } from './data';
+import { materialsFor } from './utils';
 import {
+  CLOSURE_FINISHES,
+  CLOSURE_TYPES,
   COLLAR_STYLES,
   MAX_POCKETS,
   POCKET_FORMATS,
@@ -60,8 +63,8 @@ function Segmented<T extends string>({
   );
 }
 
-/** Couleur (palette rapide + sélecteur) et matière d'une zone. */
-function ColorMaterial({
+/** Couleur (palette rapide, sélecteur, code HEX) et matière adaptée à la pièce. */
+export function ColorMaterial({
   zoneId,
   spec,
   onColorChange,
@@ -94,6 +97,7 @@ function ColorMaterial({
               if (/^#[0-9a-f]{6}$/i.test(value)) onColorChange(zone.id, value as HexColor);
             }}
           />
+          <HexField value={zone.hex} label={zone.label} onCommit={(value) => onColorChange(zone.id, value)} />
         </div>
       </div>
       <div className="opt-row">
@@ -106,10 +110,37 @@ function ColorMaterial({
             if (material) onMaterialChange(zone.id, material);
           }}
         >
-          {MATERIALS.map((material) => <option key={material} value={material}>{material}</option>)}
+          {withCurrent(materialsFor(zone.id), zone.material).map((material) => <option key={material} value={material}>{material}</option>)}
         </select>
       </div>
     </>
+  );
+}
+
+/** Garde la matière actuelle dans la liste, même si elle n'est pas proposée pour cette pièce. */
+function withCurrent<T>(list: T[], current: T): T[] {
+  return list.includes(current) ? list : [current, ...list];
+}
+
+function HexField({ value, label, onCommit }: { value: string; label: string; onCommit: (value: HexColor) => void }) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  return (
+    <input
+      className="hex-field"
+      type="text"
+      value={text}
+      maxLength={7}
+      spellCheck={false}
+      aria-label={`Code HEX ${label}`}
+      onChange={(event) => setText(event.currentTarget.value)}
+      onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+      onBlur={() => {
+        const normalized = text.startsWith('#') ? text : `#${text}`;
+        if (/^#[0-9a-f]{6}$/i.test(normalized)) onCommit(normalized.toUpperCase() as HexColor);
+        else setText(value);
+      }}
+    />
   );
 }
 
@@ -182,10 +213,17 @@ export function ComponentEditors({
 }: ComponentEditorsProps) {
   const collarRef = useRef<HTMLDivElement>(null);
   const pocketsRef = useRef<HTMLDivElement>(null);
+  const closureRef = useRef<HTMLDivElement>(null);
   const garment = spec.garment;
 
   useEffect(() => {
-    const target = selected === 'col' ? collarRef.current : selected === 'poches' ? pocketsRef.current : null;
+    const target = selected === 'col'
+      ? collarRef.current
+      : selected === 'poches'
+        ? pocketsRef.current
+        : selected === 'zip' || selected === 'boutons'
+          ? closureRef.current
+          : null;
     target?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [selected]);
 
@@ -199,7 +237,7 @@ export function ComponentEditors({
 
   return (
     <section className="block">
-      <h2>Col et poches</h2>
+      <h2>Col, poches et fermeture</h2>
 
       <div ref={collarRef} className={`component${selected === 'col' ? ' sel' : ''}`}>
         <button className="zone-head" type="button" onClick={() => onSelectZone('col')}>
@@ -262,6 +300,38 @@ export function ComponentEditors({
         >
           {garment.pockets.length >= MAX_POCKETS ? `${MAX_POCKETS} poches au maximum` : '+ Ajouter une poche'}
         </button>
+      </div>
+
+      <div ref={closureRef} className={`component${selected === 'zip' || selected === 'boutons' ? ' sel' : ''}`}>
+        <button
+          className="zone-head"
+          type="button"
+          onClick={() => onSelectZone(garment.closure === 'boutons' ? 'boutons' : 'zip')}
+        >
+          <strong>Fermeture</strong>
+        </button>
+        <Segmented
+          label="Type"
+          options={CLOSURE_TYPES}
+          value={garment.closure}
+          onChange={(closure) => onGarmentChange((current) => ({ ...current, closure }))}
+        />
+        {garment.closure !== 'aucune' && (
+          <>
+            <Segmented
+              label="Finition"
+              options={CLOSURE_FINISHES}
+              value={garment.finish}
+              onChange={(finish) => onGarmentChange((current) => ({ ...current, finish }))}
+            />
+            <ColorMaterial
+              zoneId={garment.closure === 'boutons' ? 'boutons' : 'zip'}
+              spec={spec}
+              onColorChange={onColorChange}
+              onMaterialChange={onMaterialChange}
+            />
+          </>
+        )}
       </div>
     </section>
   );

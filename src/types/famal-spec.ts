@@ -12,7 +12,8 @@ export type MaterialPreset =
   | 'cuir mat'
   | 'cuir brillant'
   | 'microfibre haute densité'
-  | 'métal';
+  | 'métal'
+  | 'résine mate';
 
 export interface LogoPlacement {
   x: number; // position relative à la zone, de -0.5 à 0.5

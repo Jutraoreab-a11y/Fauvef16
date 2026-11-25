@@ -61,6 +61,7 @@ export const MATERIALS: MaterialPreset[] = [
   'cuir brillant',
   'microfibre haute densité',
   'métal',
+  'résine mate',
 ];
 
 export const COLORS: [string, HexColor][] = [
@@ -101,6 +102,10 @@ export const MATERIAL_TERMS: [string, MaterialPreset][] = [
   ['maille épaisse', 'maille épaisse'],
   ['coton lourd', 'coton lourd'],
   ['microfibre', 'microfibre haute densité'],
+  ['métal', 'métal'],
+  ['metal', 'métal'],
+  ['résine', 'résine mate'],
+  ['plastique', 'résine mate'],
 ];
 
 export const KEYWORDS: [string, 'patch' | 'boxy' | 'raise' | 'pad'][] = [
@@ -124,6 +129,8 @@ export const CHIPS: Record<ProductType, string[]> = {
     'Passe le col en capuche',
     'Ajoute une poche kangourou',
     'Mets les poches en haut',
+    'Passe en demi-zip',
+    'Ferme avec des boutons assortis',
     'Ajoute mon patch sur les bords-côtes',
   ],
   gear: [

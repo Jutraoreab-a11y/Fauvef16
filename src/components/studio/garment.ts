@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import {
   collarHeightFrom,
   defaultGarmentOptions,
+  HALF_ZIP_BOTTOM,
+  buttonHeights,
   garmentBottomFromLength,
   pocketQuads,
   type GarmentOptions,
@@ -268,6 +270,14 @@ function stitch(points: THREE.Vector3[], closed: boolean, radius = 0.0055) {
   return new THREE.TubeGeometry(curve, Math.max(24, points.length * 3), radius, 6, closed);
 }
 
+/** Bouton rond à quatre trous suggérés par un léger bombé, orienté selon la normale. */
+function button(position: THREE.Vector3, normal: THREE.Vector3) {
+  const geometry = new THREE.CylinderGeometry(0.042, 0.046, 0.02, 28);
+  geometry.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal));
+  geometry.translate(position.x, position.y, position.z);
+  return geometry;
+}
+
 /** Pression posée à plat sur la surface, orientée selon la normale. */
 function snap(position: THREE.Vector3, normal: THREE.Vector3) {
   const geometry = new THREE.CylinderGeometry(0.034, 0.036, 0.016, 24);
@@ -439,20 +449,39 @@ export function vestParts(
     add('couture', `${label}-armhole-stitch`, stitch(ring, true));
   });
 
-  // Zip : suit le milieu devant jusqu'en haut du col (ou de la bande d'encolure).
-  const zipPoints: THREE.Vector3[] = [];
-  for (let index = 0; index <= 40; index += 1) {
-    const y = lerp(bottom + 0.02, top - 0.04, index / 40);
-    zipPoints.push(new THREE.Vector3(0, y, section(y).b + 0.02));
+  // Fermeture du milieu devant : zip complet, demi-zip, boutons sur une patte, ou rien.
+  if (options.closure === 'zip' || options.closure === 'demi_zip') {
+    const zipStart = options.closure === 'zip' ? bottom + 0.02 : HALF_ZIP_BOTTOM;
+    const zipPoints: THREE.Vector3[] = [];
+    for (let index = 0; index <= 40; index += 1) {
+      const y = lerp(zipStart, top - 0.04, index / 40);
+      zipPoints.push(new THREE.Vector3(0, y, section(y).b + 0.02));
+    }
+    for (let index = 1; index <= 6; index += 1) {
+      const y = lerp(top - 0.04, collarTop - 0.01, index / 6);
+      zipPoints.push(new THREE.Vector3(0, y, collarSection(y).b + 0.02));
+    }
+    add('zip', 'zip', new THREE.TubeGeometry(new THREE.CatmullRomCurve3(zipPoints), 120, 0.013, 8, false));
+    const pullerY = Math.max(collarTop - 0.1, top - 0.02);
+    add('zip', 'zip-puller', new THREE.BoxGeometry(0.042, 0.1, 0.014)
+      .translate(0, pullerY - 0.05, Math.max(collarSection(pullerY).b, section(pullerY - 0.05).b) + 0.035));
+    if (options.closure === 'demi_zip') {
+      // Arrêt du demi-zip : petite barrette au bas de la fente.
+      add('zip', 'zip-stop', new THREE.BoxGeometry(0.06, 0.018, 0.016)
+        .translate(0, zipStart, section(zipStart).b + 0.02));
+    }
+  } else if (options.closure === 'boutons') {
+    // Patte de boutonnage : bande de tissu du corps, puis boutons cousus dessus.
+    add('corps', 'placket', surfaceQuad(section, [[-0.07, top - 0.02], [0.07, top - 0.02], [0.07, bottom + 0.13], [-0.07, bottom + 0.13]], 0.01, 4, 24));
+    add('couture', 'placket-stitch', stitch(quadOutline(section, [[-0.07, top - 0.02], [0.07, top - 0.02], [0.07, bottom + 0.13], [-0.07, bottom + 0.13]], 0.016, 0.018), true));
+    buttonHeights(bottom, top).forEach((y, index) => {
+      add('boutons', `front-button-${index}`, button(surfacePoint(section, FRONT, y, 0.022), surfaceNormal(section, FRONT, y)));
+    });
+    if (options.collar === 'montant') {
+      const y = top - 0.03 + collarHeight * 0.5;
+      add('boutons', 'collar-front-button', button(surfacePoint(collarSection, FRONT, y, 0.016, 2.1), surfaceNormal(collarSection, FRONT, y)));
+    }
   }
-  for (let index = 1; index <= 6; index += 1) {
-    const y = lerp(top - 0.04, collarTop - 0.01, index / 6);
-    zipPoints.push(new THREE.Vector3(0, y, collarSection(y).b + 0.02));
-  }
-  add('zip', 'zip', new THREE.TubeGeometry(new THREE.CatmullRomCurve3(zipPoints), 120, 0.013, 8, false));
-  const pullerY = Math.max(collarTop - 0.1, top - 0.02);
-  add('zip', 'zip-puller', new THREE.BoxGeometry(0.042, 0.1, 0.014)
-    .translate(0, pullerY - 0.05, Math.max(collarSection(pullerY).b, section(pullerY - 0.05).b) + 0.035));
 
   // Poches : chaque quadrilatère du repère commun est projeté sur la surface du corps.
   pocketQuads(options.pockets, bottom).forEach((quad) => {

@@ -858,3 +858,13 @@ select {
 .component > .btn {
   margin-top: 12px;
 }
+
+.palette .hex-field {
+  width: 78px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, monospace;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+}

@@ -234,7 +234,7 @@ function ProductMeshes({
           ? textures.rib
           : zone.material === 'cuir mat' || zone.material === 'cuir brillant'
             ? textures.leather
-            : zone.material === 'métal'
+            : zone.material === 'métal' || zone.material === 'résine mate'
               ? null
               : textures.knit;
         const materialSettings = materialProperties(zone);
@@ -282,6 +282,7 @@ function materialProperties(zone: StudioZone) {
     'cuir brillant': { roughness: 0.22, metalness: 0, sheen: 0, sheenRoughness: 0.5, bumpScale: 0.08, clearcoat: 0.8, clearcoatRoughness: 0.15 },
     'microfibre haute densité': { roughness: 0.5, metalness: 0, sheen: 0.5, sheenRoughness: 0.4, bumpScale: 0.15, clearcoat: 0, clearcoatRoughness: 0 },
     métal: { roughness: 0.3, metalness: 1, sheen: 0, sheenRoughness: 0.5, bumpScale: 0, clearcoat: 0, clearcoatRoughness: 0 },
+    'résine mate': { roughness: 0.55, metalness: 0, sheen: 0, sheenRoughness: 0.5, bumpScale: 0, clearcoat: 0.2, clearcoatRoughness: 0.6 },
   } satisfies Record<(typeof MATERIALS)[number], {
     roughness: number;
     metalness: number;

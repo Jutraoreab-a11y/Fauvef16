@@ -1,7 +1,8 @@
 import type { HexColor, ProductType, SpecsTable } from '@/types/famal-spec';
 import { BASES, COLORS, KEYWORDS, MATERIALS, MATERIAL_TERMS, ZONE_ALIASES } from './data';
 import { defaultGarmentOptions, pocketDefaults } from './garment-options';
-import type { CollarStyle, PocketFormat, PocketLevel, PocketSide } from './garment-options';
+import type { ClosureFinish, ClosureType, CollarStyle, PocketFormat, PocketLevel, PocketSide } from './garment-options';
+import type { MaterialPreset } from '@/types/famal-spec';
 import type { CommandPatch, StudioSpec, StudioZone } from './types';
 
 export function createInitialSpec(type: ProductType): StudioSpec {
@@ -178,6 +179,19 @@ export function parseGarmentCommand(text: string): CommandPatch[] {
   else if (has(/\bcol montant\b|\bcol droit\b/)) collar = 'montant';
   if (collar) patches.push({ op: 'set_collar', style: collar });
 
+  // Fermeture
+  let closure: ClosureType | null = null;
+  if (has(/\bdemi ?zip\b|\bquart de zip\b|\bzip court\b/)) closure = 'demi_zip';
+  else if (has(/\bsans (fermeture|zip)\b|\b(enleve|enlever|supprime|retire) (le |la )?(zip|fermeture)\b/)) closure = 'aucune';
+  else if (has(/\bzip complet\b|\bzip (en )?entier\b|\b(remets|mets|met) (un |le )?zip\b/)) closure = 'zip';
+  else if (has(/\b(fermeture|ferme) (a |avec des |par )?(boutons|pressions)\b|\b(avec|en) (des )?boutons\b|\bzip par des (boutons|pressions)\b|\bboutonnee?\b/)) closure = 'boutons';
+  if (closure) patches.push({ op: 'set_closure', closure });
+
+  let finish: ClosureFinish | null = null;
+  if (has(/\bassortie?s?\b|\bton sur ton\b|\bmeme couleur que le (tissu|corps)\b/)) finish = 'assorti';
+  else if (has(/\b(finition|zip|boutons|fermeture) (en )?metal\b|\bmetallique\b/)) finish = 'metal';
+  if (finish) patches.push({ op: 'set_finish', finish });
+
   // Poches (on ignore les demandes de patch ou logo « sur les poches »)
   const aboutPockets = has(/\bpoches?\b|\bkangourou\b/) && !has(/\b(patch|logo|broderie|etiquette)\b/);
   if (!aboutPockets) return patches;
@@ -218,4 +232,48 @@ export function parseGarmentCommand(text: string): CommandPatch[] {
     patches.push({ op: 'update_pockets', format, side, level });
   }
   return patches;
+}
+
+/**
+ * Finition de la fermeture : colore le zip et les boutons.
+ * « Assorti au tissu » reprend la couleur du corps (et la suit quand le corps change).
+ */
+export function applyFinish(spec: StudioSpec, finish: ClosureFinish): StudioSpec {
+  const body = spec.zones.find((zone) => zone.id === 'corps');
+  const look = (id: string): { hex: HexColor; material: MaterialPreset } | null => {
+    if (finish === 'metal') return { hex: id === 'zip' ? '#9AA3AD' : '#C9C3B6', material: 'métal' };
+    if (finish === 'noir_mat') return { hex: '#15171A', material: 'résine mate' };
+    return body ? { hex: body.hex, material: 'résine mate' } : null;
+  };
+  return {
+    ...spec,
+    zones: spec.zones.map((zone) => {
+      if (zone.id !== 'zip' && zone.id !== 'boutons') return zone;
+      const next = look(zone.id);
+      return next ? { ...zone, ...next } : zone;
+    }),
+  };
+}
+
+const FABRICS: MaterialPreset[] = ['molleton', 'maille épaisse', 'coton lourd', 'microfibre haute densité', 'cuir mat', 'cuir brillant'];
+
+/** Matières proposées pour une pièce : on ne propose pas du métal pour une manche ni du molleton pour un zip. */
+export function materialsFor(zoneId: string): MaterialPreset[] {
+  switch (zoneId) {
+    case 'zip':
+      return ['métal', 'résine mate'];
+    case 'boutons':
+      return ['métal', 'résine mate', 'cuir mat'];
+    case 'couture':
+      return ['coton lourd', 'microfibre haute densité'];
+    case 'bords':
+      return ['maille épaisse', 'molleton', 'coton lourd'];
+    case 'corps':
+    case 'manches':
+    case 'col':
+    case 'poches':
+      return FABRICS;
+    default:
+      return [...MATERIALS];
+  }
 }
