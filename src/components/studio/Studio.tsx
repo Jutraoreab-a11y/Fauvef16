@@ -1,11 +1,13 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WebGLRenderer } from 'three';
 import type { HexColor, ProductType } from '@/types/famal-spec';
 import { AssistantPanel, LeftPanel } from './StudioPanels';
 import PatternView from './PatternView';
+import { ModelsDrawer } from './ModelsDrawer';
+import { modelStore, type HistoryEntry, type ModelDraft, type SavedAsset } from '@/lib/models-store';
 import {
   CLOSURE_FINISHES,
   CLOSURE_TYPES,
@@ -50,6 +52,51 @@ function download(blob: Blob, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
+const INITIAL_MESSAGE: ChatMessage = {
+  role: 'system',
+  text: 'Copilote prêt. Décrivez un ajustement en français : le patch est appliqué à la scène.',
+};
+
+function defaultModelName(type: ProductType): string {
+  const stamp = new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date());
+  return `${BASES[type].name} · ${stamp}`;
+}
+
+/** Image réduite en data URL : logos et aperçus tiennent dans la sauvegarde. */
+function imageToDataUrl(source: CanvasImageSource, width: number, height: number, max: number, mime: string): string {
+  const scale = Math.min(1, max / Math.max(width, height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Impossible de préparer l’image pour la sauvegarde.');
+  if (mime === 'image/jpeg') {
+    context.fillStyle = '#F4F1EC';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL(mime, 0.75);
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Un logo enregistré n’a pas pu être rechargé.'));
+    image.src = src;
+  });
+}
+
+function messagesFromHistory(history: HistoryEntry[]): ChatMessage[] {
+  return [
+    INITIAL_MESSAGE,
+    ...history.flatMap((entry): ChatMessage[] => [
+      { role: 'user', text: entry.text },
+      { role: 'assistant', text: `Patch appliqué à la scène :\n${entry.lines.map((line) => `- ${line}`).join('\n')}` },
+    ]),
+  ];
+}
+
 function labelOf<T extends string>(list: { id: T; label: string }[], id: T): string {
   return list.find((item) => item.id === id)?.label ?? id;
 }
@@ -80,12 +127,19 @@ export default function Studio() {
     third: 'waiting' as PipelineStepState,
   });
   const [analysisLog, setAnalysisLog] = useState<string[]>([]);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: 'system',
-      text: 'Copilote prêt. Décrivez un ajustement en français : le patch est appliqué à la scène.',
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([INITIAL_MESSAGE]);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [modelId, setModelId] = useState<string | null>(null);
+  const [modelName, setModelName] = useState(() => defaultModelName('apparel'));
+  const [saveState, setSaveState] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle');
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [libraryRevision, setLibraryRevision] = useState(0);
+  const newModelInput = useRef<HTMLInputElement>(null);
+  const modelIdRef = useRef<string | null>(null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  // Le prochain changement d'état vient d'un chargement ou d'un nouveau modèle : pas de sauvegarde auto.
+  const skipAutosave = useRef(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const renderer = useRef<WebGLRenderer | null>(null);
   const objectUrls = useRef(new Set<string>());
@@ -163,7 +217,8 @@ export default function Studio() {
     setSelected(null);
   };
 
-  const handleAnalyze = async () => {
+  const handleAnalyze = async (source?: HTMLImageElement) => {
+    const sourceImage = source ?? image;
     setAnalyzing(true);
     const nextSpec = createInitialSpec(type);
     setSpec(nextSpec);
@@ -178,8 +233,8 @@ export default function Studio() {
       setPipeline((current) => ({ ...current, first: 'done', second: 'running' }));
       await pause(900);
 
-      if (image) {
-        const [mainColor, secondaryColor] = dominantColors(image);
+      if (sourceImage) {
+        const [mainColor, secondaryColor] = dominantColors(sourceImage);
         const mainZone = type === 'apparel' ? 'corps' : 'coque';
         const secondaryZone = type === 'apparel' ? 'bords' : 'manchette';
         const main = nextSpec.zones.find((zone) => zone.id === mainZone);
@@ -200,7 +255,8 @@ export default function Studio() {
       log.push('Éclatement simulé localement : Claude Vision le remplacera en Phase 2.');
       setPipeline((current) => ({ ...current, second: 'done', third: 'running' }));
       await pause(500);
-      setSpec(nextSpec);
+      // Nouvel objet : sinon React (et la sauvegarde auto) ne voit pas les couleurs détectées.
+      setSpec({ ...nextSpec, zones: nextSpec.zones.map((zone) => ({ ...zone })) });
       setPipeline((current) => ({ ...current, third: 'done' }));
       setAnalysisLog(log);
       showToast('Pipeline terminé');
@@ -210,6 +266,155 @@ export default function Studio() {
     } finally {
       setAnalyzing(false);
     }
+  };
+
+  // -------------------------------------------------------------------------
+  // Bibliothèque de modèles : enregistrement, sauvegarde auto, reprise
+  // -------------------------------------------------------------------------
+
+  const latest = useRef({ type, spec, assets, history, modelName, project });
+  latest.current = { type, spec, assets, history, modelName, project };
+
+  const buildDraft = (): ModelDraft => {
+    const current = latest.current;
+    const savedAssets: SavedAsset[] = current.assets.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      kind: asset.kind,
+      x: asset.x,
+      y: asset.y,
+      size: asset.size,
+      dataUrl: asset.image
+        ? imageToDataUrl(asset.image, asset.image.naturalWidth, asset.image.naturalHeight, 512, 'image/png')
+        : null,
+    }));
+    const canvas = renderer.current?.domElement;
+    return {
+      id: modelIdRef.current ?? undefined,
+      name: current.modelName.trim() || defaultModelName(current.type),
+      collection: current.project,
+      productType: current.type,
+      category: BASES[current.type].name,
+      spec: current.spec,
+      assets: savedAssets,
+      history: current.history,
+      thumbnail: canvas ? imageToDataUrl(canvas, canvas.width, canvas.height, 220, 'image/jpeg') : null,
+    };
+  };
+
+  const saveModel = (manual: boolean) => {
+    saveQueue.current = saveQueue.current.then(async () => {
+      setSaveState('saving');
+      try {
+        const saved = await modelStore().save(buildDraft());
+        modelIdRef.current = saved.id;
+        setModelId(saved.id);
+        setSavedAt(saved.updatedAt);
+        setSaveState('saved');
+        setLibraryRevision((value) => value + 1);
+        if (manual) showToast('Modèle enregistré');
+      } catch (error) {
+        setSaveState('error');
+        showToast(error instanceof Error ? error.message : 'Enregistrement impossible.');
+      }
+    });
+  };
+
+  // Sauvegarde automatique : 1,2 s après la dernière modification (zones, poches, assistant, logos…).
+  useEffect(() => {
+    if (skipAutosave.current) {
+      skipAutosave.current = false;
+      return undefined;
+    }
+    setSaveState('dirty');
+    const timer = window.setTimeout(() => saveModel(false), 1200);
+    return () => window.clearTimeout(timer);
+    // saveModel lit l'état courant via des refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec, assets, history, modelName, project, type]);
+
+  const resetToNewModel = (nextType: ProductType) => {
+    skipAutosave.current = true;
+    modelIdRef.current = null;
+    setModelId(null);
+    setModelName(defaultModelName(nextType));
+    setType(nextType);
+    setSpec(createInitialSpec(nextType));
+    setAssets([]);
+    setHistory([]);
+    setMessages([INITIAL_MESSAGE]);
+    setSelected(null);
+    setShowPattern(true);
+    setPipeline({ first: 'waiting', second: 'waiting', third: 'waiting' });
+    setAnalysisLog([]);
+    setSaveState('idle');
+    setSavedAt(null);
+  };
+
+  /** « + Nouveau modèle » : repart d'une base propre et ouvre directement le choix de la photo. */
+  const handleNewModel = () => {
+    resetToNewModel(type);
+    if (currentImageUrl.current) revokeObjectUrl(currentImageUrl.current);
+    currentImageUrl.current = null;
+    setImageUrl(null);
+    setImage(null);
+    newModelInput.current?.click();
+  };
+
+  const handleNewModelPhoto = (file: File | undefined) => {
+    if (!file) return;
+    makeImage(file, (loadedImage, url) => {
+      currentImageUrl.current = url;
+      setImageUrl(url);
+      setImage(loadedImage);
+      showToast('Photo importée : éclatement en cours');
+      void handleAnalyze(loadedImage);
+    });
+  };
+
+  const openModel = useCallback(async (id: string) => {
+    try {
+      const model = await modelStore().load(id);
+      if (!model) {
+        showToast('Ce modèle n’existe plus.');
+        return;
+      }
+      const restoredAssets: StudioAsset[] = await Promise.all(model.assets.map(async (asset) => ({
+        id: asset.id,
+        name: asset.name,
+        kind: asset.kind,
+        x: asset.x,
+        y: asset.y,
+        size: asset.size,
+        image: asset.dataUrl ? await loadImage(asset.dataUrl) : null,
+      })));
+      skipAutosave.current = true;
+      modelIdRef.current = model.id;
+      setModelId(model.id);
+      setModelName(model.name);
+      setProject(model.collection);
+      setType(model.productType);
+      setSpec({
+        ...createInitialSpec(model.productType),
+        ...model.spec,
+      });
+      setAssets(restoredAssets);
+      setHistory(model.history);
+      setMessages(messagesFromHistory(model.history));
+      setSelected(null);
+      setShowPattern(true);
+      setSaveState('saved');
+      setSavedAt(model.updatedAt);
+      setDrawerOpen(false);
+      showToast(`« ${model.name} » ouvert`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Ouverture impossible.');
+    }
+  }, []);
+
+  const handleModelDeleted = (id: string) => {
+    if (id === modelIdRef.current) resetToNewModel(type);
+    showToast('Modèle supprimé');
   };
 
   const handleColorChange = (id: string, value: HexColor) => {
@@ -392,6 +597,8 @@ export default function Studio() {
         pre: JSON.stringify({ patches }, null, 2),
       },
     ]);
+    // Historique de l'assistant, enregistré avec le modèle.
+    setHistory((current) => [...current, { at: new Date().toISOString(), text, lines }]);
   };
 
   const handleExport = () => {
@@ -450,7 +657,30 @@ export default function Studio() {
           >
             <option>Collection Hiver</option>
             <option>Collection Été</option>
+            {project !== 'Collection Hiver' && project !== 'Collection Été' && <option>{project}</option>}
           </select>
+          <button className="btn-text" type="button" onClick={() => setDrawerOpen(true)}>
+            Mes modèles
+          </button>
+          <span className="sep" />
+          <input
+            className="model-name"
+            type="text"
+            value={modelName}
+            aria-label="Nom du modèle"
+            onChange={(event) => setModelName(event.currentTarget.value)}
+          />
+          <span className={`save-state ${saveState}`} aria-live="polite">
+            {saveState === 'saving'
+              ? 'Enregistrement…'
+              : saveState === 'dirty'
+                ? 'Modifications en cours'
+                : saveState === 'error'
+                  ? 'Non enregistré'
+                  : saveState === 'saved' && savedAt
+                    ? `Enregistré à ${new Date(savedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
+                    : ''}
+          </span>
         </div>
         <div className="top-actions">
           <button
@@ -468,6 +698,27 @@ export default function Studio() {
             onClick={() => setAdvanced((current) => !current)}
           >
             Réglages avancés
+          </button>
+          <button
+            className="btn ghost"
+            type="button"
+            title="Nouveau modèle : importez une photo, l’éclatement crée la 3D et le patron"
+            onClick={handleNewModel}
+          >
+            + Nouveau modèle
+          </button>
+          <input
+            ref={newModelInput}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(event) => {
+              handleNewModelPhoto(event.currentTarget.files?.[0]);
+              event.currentTarget.value = '';
+            }}
+          />
+          <button className="btn ghost" type="button" title="Enregistrer le modèle" onClick={() => saveModel(true)}>
+            Enregistrer
           </button>
           <button className="btn primary" type="button" onClick={handleExport}>
             Exporter le dossier fournisseur
@@ -602,6 +853,16 @@ export default function Studio() {
 
         <AssistantPanel type={type} messages={messages} onSubmit={handleAssistantSubmit} />
       </main>
+      <ModelsDrawer
+        open={drawerOpen}
+        currentId={modelId}
+        revision={libraryRevision}
+        onClose={() => setDrawerOpen(false)}
+        onOpenModel={(id) => { void openModel(id); }}
+        onDuplicated={(id) => { void openModel(id); }}
+        onDeleted={handleModelDeleted}
+        onError={showToast}
+      />
       {toastMessage && <div className="toast" role="status">{toastMessage}</div>}
     </div>
   );
