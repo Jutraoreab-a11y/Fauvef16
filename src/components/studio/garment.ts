@@ -1,4 +1,11 @@
 import * as THREE from 'three';
+import {
+  collarHeightFrom,
+  defaultGarmentOptions,
+  garmentBottomFromLength,
+  pocketQuads,
+  type GarmentOptions,
+} from './garment-options';
 
 /**
  * Géométrie du gilet et du mannequin, construites à partir du même squelette.
@@ -114,7 +121,7 @@ export function garmentSectionFn(values: GarmentValues): SectionFn {
 }
 
 export function garmentBottom(values: GarmentValues): number {
-  return -1.05 - (values.longueur - 55) * 0.006;
+  return garmentBottomFromLength(values.longueur);
 }
 
 /** Point de la surface pour un angle θ (θ = π/2 : milieu devant). */
@@ -269,12 +276,99 @@ function snap(position: THREE.Vector3, normal: THREE.Vector3) {
   return geometry;
 }
 
-export function vestParts(rawValues: Record<string, number>): ProductPart[] {
+/** Bilinéaire entre 4 coins (dx, y) : [haut-gauche, haut-droit, bas-droit, bas-gauche]. */
+function quadAt(corners: [number, number][], u: number, v: number): [number, number] {
+  const [tl, tr, br, bl] = corners;
+  const topX = lerp(tl[0], tr[0], u);
+  const topY = lerp(tl[1], tr[1], u);
+  const botX = lerp(bl[0], br[0], u);
+  const botY = lerp(bl[1], br[1], u);
+  return [lerp(botX, topX, v), lerp(botY, topY, v)];
+}
+
+/** Pièce rapportée qui épouse le corps : le quadrilatère (dx, y) est projeté sur la surface. */
+function surfaceQuad(fn: SectionFn, corners: [number, number][], offset: number, cols = 14, rows = 8) {
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  for (let row = 0; row <= rows; row += 1) {
+    for (let col = 0; col <= cols; col += 1) {
+      const [dx, y] = quadAt(corners, col / cols, row / rows);
+      const point = surfacePoint(fn, FRONT - dx, y, offset);
+      positions.push(point.x, point.y, point.z);
+      uvs.push(dx * 0.5, y / 3.4);
+    }
+  }
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const a = row * (cols + 1) + col;
+      const b = a + cols + 1;
+      indices.push(a, a + 1, b, b, a + 1, b + 1);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** Contour de piqûre, légèrement en retrait du bord de la poche. */
+function quadOutline(fn: SectionFn, corners: [number, number][], offset: number, inset: number) {
+  const points: THREE.Vector3[] = [];
+  const edges: [number, number, number, number][] = [
+    [0, 1, 1, 1], [1, 1, 1, 0], [1, 0, 0, 0], [0, 0, 0, 1],
+  ];
+  // Marge relative : le retrait reste constant quelle que soit la taille de la poche.
+  const width = Math.max(Math.abs(corners[1][0] - corners[0][0]), Math.abs(corners[2][0] - corners[3][0]), 0.05);
+  const height = Math.max(Math.abs(corners[0][1] - corners[3][1]), 0.05);
+  const mu = Math.min(0.3, inset / width);
+  const mv = Math.min(0.3, inset / height);
+  edges.forEach(([u0, v0, u1, v1]) => {
+    for (let index = 0; index < 8; index += 1) {
+      const t = index / 8;
+      const u = lerp(lerp(mu, 1 - mu, u0), lerp(mu, 1 - mu, u1), t);
+      const v = lerp(lerp(mv, 1 - mv, v0), lerp(mv, 1 - mv, v1), t);
+      const [dx, y] = quadAt(corners, u, v);
+      points.push(surfacePoint(fn, FRONT - dx, y, offset));
+    }
+  });
+  return points;
+}
+
+/** Capuche : coque autour de la tête, ouverte devant, posée sur la bande d'encolure. */
+function hoodGeometry(base: Section, baseY: number): THREE.BufferGeometry {
+  const height = BODY.headY + 0.4 - baseY;
+  const opening = 0.75;
+  const hoodSection: SectionFn = (y) => {
+    const s = clamp01((y - baseY) / height);
+    const swell = Math.sin(Math.min(1, s * 1.6) * Math.PI / 2);
+    const close = Math.pow(1 - Math.pow(s, 2.6), 1 / 2.6);
+    const a = lerp(base.a, 0.31, swell) * close;
+    const b = lerp(base.b, 0.35, swell) * close;
+    return { a: Math.max(a, 0.002), b: Math.max(b, 0.002) };
+  };
+  return sweptSurface(hoodSection, {
+    y0: baseY - 0.005,
+    y1: baseY + height,
+    rows: 40,
+    theta0: FRONT + opening,
+    theta1: FRONT + Math.PI * 2 - opening,
+    cols: 56,
+    exponent: 2,
+  }).translate(0, 0, -0.03);
+}
+
+export function vestParts(
+  rawValues: Record<string, number>,
+  options: GarmentOptions = defaultGarmentOptions(),
+): ProductPart[] {
   const values = readGarmentValues(rawValues);
   const section = garmentSectionFn(values);
   const bottom = garmentBottom(values);
   const top = BODY.neckY - 0.005;
-  const collarHeight = 0.12 + values.col_hauteur * 0.0035;
+  const collarHeight = collarHeightFrom(options.collar, values.col_hauteur);
   const boxyT = clamp01(values.boxy / 100);
   const parts: ProductPart[] = [];
   const add = (zone: string, id: string, geometry: THREE.BufferGeometry) => {
@@ -287,14 +381,16 @@ export function vestParts(rawValues: Record<string, number>): ProductPart[] {
   // Bord-côte bas : toujours juste au-dessus du corps (sinon il passe dessous par endroits).
   add('bords', 'ribbing', sweptSurface(section, { y0: bottom, y1: bottom + 0.13, rows: 6, offset: 0.008 }));
 
-  // Col montant, posé sur l'encolure et un peu évasé vers le haut.
+  // Col : la bande posée sur l'encolure change selon le style ; la capuche y ajoute son volume.
   const collarBase = section(top);
+  const flare = options.collar === 'montant' ? 0.02 : options.collar === 'capuche' ? 0.11 : -0.004;
   const collarSection: SectionFn = (y) => {
     const t = clamp01((y - (top - 0.03)) / collarHeight);
-    return { a: collarBase.a + 0.008 + t * 0.02, b: collarBase.b + 0.008 + t * 0.02 };
+    return { a: collarBase.a + 0.008 + t * flare, b: collarBase.b + 0.008 + t * flare };
   };
   const collarTop = top - 0.03 + collarHeight;
   add('col', 'collar', sweptSurface(collarSection, { y0: top - 0.03, y1: collarTop, rows: 8, exponent: 2.1 }));
+  if (options.collar === 'capuche') add('col', 'hood', hoodGeometry(collarSection(collarTop), collarTop));
 
   // Manches : montées sur l'épaule du vêtement, elles finissent toujours au poignet du mannequin.
   const shoulder = section(BODY.shoulderY);
@@ -343,61 +439,48 @@ export function vestParts(rawValues: Record<string, number>): ProductPart[] {
     add('couture', `${label}-armhole-stitch`, stitch(ring, true));
   });
 
-  // Zip : suit le milieu devant, du bas jusqu'en haut du col.
+  // Zip : suit le milieu devant jusqu'en haut du col (ou de la bande d'encolure).
   const zipPoints: THREE.Vector3[] = [];
   for (let index = 0; index <= 40; index += 1) {
     const y = lerp(bottom + 0.02, top - 0.04, index / 40);
-    zipPoints.push(new THREE.Vector3(0, y, section(y).b + 0.014));
+    zipPoints.push(new THREE.Vector3(0, y, section(y).b + 0.02));
   }
   for (let index = 1; index <= 6; index += 1) {
     const y = lerp(top - 0.04, collarTop - 0.01, index / 6);
-    zipPoints.push(new THREE.Vector3(0, y, collarSection(y).b + 0.014));
+    zipPoints.push(new THREE.Vector3(0, y, collarSection(y).b + 0.02));
   }
   add('zip', 'zip', new THREE.TubeGeometry(new THREE.CatmullRomCurve3(zipPoints), 120, 0.013, 8, false));
-  const pullerY = collarTop - 0.1;
+  const pullerY = Math.max(collarTop - 0.1, top - 0.02);
   add('zip', 'zip-puller', new THREE.BoxGeometry(0.042, 0.1, 0.014)
-    .translate(0, pullerY - 0.05, collarSection(pullerY).b + 0.03));
+    .translate(0, pullerY - 0.05, Math.max(collarSection(pullerY).b, section(pullerY - 0.05).b) + 0.035));
 
-  // Poches plaquées : découpées dans la surface du corps, donc elles en suivent la courbure.
-  const pocketY0 = bottom + 0.2;
-  const pocketY1 = pocketY0 + 0.36;
-  const pockets: [string, number, number][] = [
-    ['left', FRONT + 0.32, FRONT + 0.98],
-    ['right', FRONT - 0.98, FRONT - 0.32],
-  ];
-  pockets.forEach(([label, theta0, theta1]) => {
-    add('poches', `${label}-pocket`, sweptSurface(section, {
-      y0: pocketY0, y1: pocketY1, rows: 6, theta0, theta1, cols: 16, offset: 0.014,
-    }));
-
-    const inset = 0.03;
-    const outline: THREE.Vector3[] = [];
-    const ya = pocketY0 + inset;
-    const yb = pocketY1 - inset;
-    const ta = theta0 + 0.05;
-    const tb = theta1 - 0.05;
-    for (let i = 0; i <= 8; i += 1) outline.push(surfacePoint(section, lerp(ta, tb, i / 8), yb, 0.022));
-    for (let i = 1; i <= 4; i += 1) outline.push(surfacePoint(section, tb, lerp(yb, ya, i / 4), 0.022));
-    for (let i = 1; i <= 8; i += 1) outline.push(surfacePoint(section, lerp(tb, ta, i / 8), ya, 0.022));
-    for (let i = 1; i < 4; i += 1) outline.push(surfacePoint(section, ta, lerp(ya, yb, i / 4), 0.022));
-    add('couture', `${label}-pocket-stitch`, stitch(outline, true));
-
-    const middle = (theta0 + theta1) / 2;
-    const snapY = pocketY1 - 0.07;
-    add('boutons', `${label}-button`, snap(
-      surfacePoint(section, middle, snapY, 0.026),
-      surfaceNormal(section, middle, snapY),
-    ));
+  // Poches : chaque quadrilatère du repère commun est projeté sur la surface du corps.
+  pocketQuads(options.pockets, bottom).forEach((quad) => {
+    add('poches', `pocket-${quad.key}`, surfaceQuad(section, quad.corners, 0.014));
+    add('couture', `pocket-stitch-${quad.key}`, stitch(quadOutline(section, quad.corners, 0.022, 0.025), true));
+    if (quad.flap) {
+      add('poches', `pocket-flap-${quad.key}`, surfaceQuad(section, quad.flap, 0.02));
+    }
+    if (quad.snap) {
+      const [dx, y] = quad.snap;
+      const theta = FRONT - dx;
+      add('boutons', `pocket-snap-${quad.key}`, snap(
+        surfacePoint(section, theta, y, quad.flap ? 0.032 : 0.026),
+        surfaceNormal(section, theta, y),
+      ));
+    }
   });
 
-  // Pressions du col, de part et d'autre du zip.
-  const collarSnapY = top - 0.03 + collarHeight * 0.55;
-  [FRONT + 0.42, FRONT - 0.42].forEach((theta, index) => {
-    add('boutons', index === 0 ? 'left-collar-button' : 'right-collar-button', snap(
-      surfacePoint(collarSection, theta, collarSnapY, 0.012, 2.1),
-      surfaceNormal(collarSection, theta, collarSnapY),
-    ));
-  });
+  // Pressions du col montant, de part et d'autre du zip.
+  if (options.collar === 'montant') {
+    const collarSnapY = top - 0.03 + collarHeight * 0.55;
+    [FRONT + 0.42, FRONT - 0.42].forEach((theta, index) => {
+      add('boutons', index === 0 ? 'left-collar-button' : 'right-collar-button', snap(
+        surfacePoint(collarSection, theta, collarSnapY, 0.012, 2.1),
+        surfaceNormal(collarSection, theta, collarSnapY),
+      ));
+    });
+  }
 
   // Surpiqûre du bas, juste au-dessus du bord-côte.
   const hemLine: THREE.Vector3[] = [];

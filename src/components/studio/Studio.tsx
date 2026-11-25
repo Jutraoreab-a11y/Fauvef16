@@ -6,8 +6,18 @@ import type { WebGLRenderer } from 'three';
 import type { HexColor, ProductType } from '@/types/famal-spec';
 import { AssistantPanel, LeftPanel } from './StudioPanels';
 import PatternView from './PatternView';
+import {
+  COLLAR_STYLES,
+  MAX_POCKETS,
+  POCKET_FORMATS,
+  POCKET_LEVELS,
+  POCKET_SIDES,
+  newPocketId,
+  pocketDefaults,
+  type GarmentOptions,
+} from './garment-options';
 import { ASSET_SLOTS, BASES, MATERIALS } from './data';
-import { clamp, createInitialSpec, dominantColors, parseCommand, specsTableRows } from './utils';
+import { clamp, createInitialSpec, dominantColors, parseCommand, parseGarmentCommand, specsTableRows } from './utils';
 import type {
   ChatMessage,
   PipelineStepState,
@@ -36,6 +46,10 @@ function download(blob: Blob, name: string) {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function labelOf<T extends string>(list: { id: T; label: string }[], id: T): string {
+  return list.find((item) => item.id === id)?.label ?? id;
 }
 
 function pause(milliseconds: number): Promise<void> {
@@ -217,6 +231,10 @@ export default function Studio() {
     }));
   };
 
+  const handleGarmentChange = (update: (current: GarmentOptions) => GarmentOptions) => {
+    setSpec((current) => (current.garment ? { ...current, garment: update(current.garment) } : current));
+  };
+
   const handleAssetRemove = (id: string) => {
     const removed = assets.find((asset) => asset.id === id);
     if (removed?.image?.src.startsWith('blob:')) revokeObjectUrl(removed.image.src);
@@ -237,7 +255,10 @@ export default function Studio() {
 
   const handleAssistantSubmit = (text: string) => {
     setMessages((current) => [...current, { role: 'user', text }]);
-    const patches = parseCommand(text, type, spec.zones);
+    const patches = [
+      ...parseCommand(text, type, spec.zones),
+      ...(type === 'apparel' ? parseGarmentCommand(text) : []),
+    ];
     if (patches.length === 0) {
       setMessages((current) => [
         ...current,
@@ -252,6 +273,9 @@ export default function Studio() {
     const nextSpec: StudioSpec = {
       zones: spec.zones.map((zone) => ({ ...zone })),
       sliders: spec.sliders.map((slider) => ({ ...slider })),
+      garment: spec.garment
+        ? { ...spec.garment, pockets: spec.garment.pockets.map((pocket) => ({ ...pocket })) }
+        : undefined,
     };
     const nextAssets = [...assets];
     const lines: string[] = [];
@@ -271,6 +295,51 @@ export default function Studio() {
           slider.value = clamp(slider.value + patch.delta, slider.min, slider.max);
           lines.push(`${slider.label} : ${slider.value}`);
         }
+      } else if (patch.op === 'set_collar') {
+        if (nextSpec.garment) nextSpec.garment.collar = patch.style;
+        lines.push(`Col : ${COLLAR_STYLES.find((style) => style.id === patch.style)?.label ?? patch.style}`);
+      } else if (patch.op === 'add_pocket') {
+        const garment = nextSpec.garment;
+        if (garment && garment.pockets.length < MAX_POCKETS) {
+          garment.pockets.push({
+            id: newPocketId(),
+            format: patch.format,
+            side: patch.side,
+            level: patch.level,
+            offset: 0,
+            visible: true,
+          });
+          lines.push(`Poche ajoutée : ${labelOf(POCKET_FORMATS, patch.format)}, ${labelOf(POCKET_SIDES, patch.side).toLowerCase()}, ${labelOf(POCKET_LEVELS, patch.level).toLowerCase()}`);
+        } else {
+          lines.push(`Pas de nouvelle poche : ${MAX_POCKETS} au maximum`);
+        }
+      } else if (patch.op === 'update_pockets') {
+        const garment = nextSpec.garment;
+        if (garment && garment.pockets.length > 0) {
+          garment.pockets = garment.pockets.map((pocket) => ({
+            ...pocket,
+            ...(patch.format ? { format: patch.format, ...pocketDefaults(patch.format) } : {}),
+            ...(patch.side ? { side: patch.side } : {}),
+            ...(patch.level ? { level: patch.level } : {}),
+            visible: true,
+          }));
+          const parts = [
+            patch.format && `format ${labelOf(POCKET_FORMATS, patch.format).toLowerCase()}`,
+            patch.side && `côté ${labelOf(POCKET_SIDES, patch.side).toLowerCase()}`,
+            patch.level && `hauteur ${labelOf(POCKET_LEVELS, patch.level).toLowerCase()}`,
+          ].filter(Boolean);
+          lines.push(`Poches : ${parts.join(', ')}`);
+        } else {
+          lines.push('Aucune poche à modifier : demandez « ajoute une poche » d’abord');
+        }
+      } else if (patch.op === 'remove_pockets') {
+        if (nextSpec.garment) nextSpec.garment.pockets = [];
+        lines.push('Poches retirées');
+      } else if (patch.op === 'show_pockets') {
+        if (nextSpec.garment) {
+          nextSpec.garment.pockets = nextSpec.garment.pockets.map((pocket) => ({ ...pocket, visible: patch.visible }));
+        }
+        lines.push(patch.visible ? 'Poches affichées' : 'Poches masquées');
       } else {
         const zone = nextSpec.zones.find((item) => item.id === patch.zone);
         const [x, y] = ASSET_SLOTS[patch.zone] ?? [0, 0];
@@ -308,6 +377,7 @@ export default function Studio() {
       generated_at: new Date().toISOString(),
       zones: spec.zones.map(({ id, label, hex, material }) => ({ id, label, hex, material })),
       sliders: spec.sliders.map(({ id, label, value }) => ({ id, label, value })),
+      garment: spec.garment ?? null,
       assets: assets.map((asset) => ({
         asset_type: asset.kind,
         name: asset.name,
@@ -398,6 +468,7 @@ export default function Studio() {
           onColorChange={handleColorChange}
           onMaterialChange={handleMaterialChange}
           onSliderChange={handleSliderChange}
+          onGarmentChange={handleGarmentChange}
           onAssetRemove={handleAssetRemove}
           onAssetKindChange={handleAssetKindChange}
           onAssetPlacementChange={handleAssetPlacementChange}

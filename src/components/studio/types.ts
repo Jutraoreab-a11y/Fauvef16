@@ -1,3 +1,4 @@
+import type { CollarStyle, GarmentOptions, PocketFormat, PocketLevel, PocketSide } from './garment-options';
 import type {
   AssetType,
   HexColor,
@@ -14,6 +15,8 @@ export type StudioZone = ZoneSpec<string>;
 export interface StudioSpec {
   zones: StudioZone[];
   sliders: SliderSpec[];
+  /** Col et poches du vêtement (absent pour l'équipement). */
+  garment?: GarmentOptions;
 }
 
 export type StudioAssetKind = Exclude<AssetType, 'texture' | 'render'>;
@@ -40,7 +43,12 @@ export type CommandPatch =
   | { op: 'set_color'; zone: string; hex: HexColor; label: string }
   | { op: 'set_material'; zone: string; material: MaterialPreset }
   | { op: 'slider'; id: string; delta: number }
-  | { op: 'add_patch'; zone: string };
+  | { op: 'add_patch'; zone: string }
+  | { op: 'set_collar'; style: CollarStyle }
+  | { op: 'add_pocket'; format: PocketFormat; side: PocketSide; level: PocketLevel }
+  | { op: 'update_pockets'; format?: PocketFormat; side?: PocketSide; level?: PocketLevel }
+  | { op: 'remove_pockets' }
+  | { op: 'show_pockets'; visible: boolean };
 
 export interface StudioBase {
   name: string;

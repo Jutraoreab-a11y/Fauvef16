@@ -203,9 +203,12 @@ function ProductMeshes({
     () => Object.fromEntries(spec.sliders.map(({ id, value }) => [id, value])),
     [sliderKey],
   );
+  const garmentKey = JSON.stringify(spec.garment ?? null);
   const parts = useMemo(
-    () => (type === 'apparel' ? vestParts(values) : gloveParts(values)),
-    [type, values],
+    () => (type === 'apparel' ? vestParts(values, spec.garment) : gloveParts(values)),
+    // garmentKey suit le contenu des options : on ne reconstruit pas à chaque rendu.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [type, values, garmentKey],
   );
   const textures = useMemo(createTextureMaps, []);
   const zones = useMemo(() => new Map(spec.zones.map((zone) => [zone.id, zone])), [spec.zones]);

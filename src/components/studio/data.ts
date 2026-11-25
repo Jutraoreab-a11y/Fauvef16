@@ -121,6 +121,9 @@ export const CHIPS: Record<ProductType, string[]> = {
     'Passe le corps en noir mat',
     'Rends la coupe plus boxy',
     'Remonte le col',
+    'Passe le col en capuche',
+    'Ajoute une poche kangourou',
+    'Mets les poches en haut',
     'Ajoute mon patch sur les bords-côtes',
   ],
   gear: [

@@ -1,5 +1,7 @@
 import type { HexColor, ProductType, SpecsTable } from '@/types/famal-spec';
 import { BASES, COLORS, KEYWORDS, MATERIALS, MATERIAL_TERMS, ZONE_ALIASES } from './data';
+import { defaultGarmentOptions, pocketDefaults } from './garment-options';
+import type { CollarStyle, PocketFormat, PocketLevel, PocketSide } from './garment-options';
 import type { CommandPatch, StudioSpec, StudioZone } from './types';
 
 export function createInitialSpec(type: ProductType): StudioSpec {
@@ -7,6 +9,7 @@ export function createInitialSpec(type: ProductType): StudioSpec {
   return {
     zones: base.zones.map((zone) => ({ ...zone })),
     sliders: base.sliders.map((slider) => ({ ...slider })),
+    garment: type === 'apparel' ? defaultGarmentOptions() : undefined,
   };
 }
 
@@ -150,4 +153,69 @@ export function parseCommand(
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+/** Texte en minuscules, sans accents ni tirets : « Bord-côte » → « bord cote ». */
+function normalize(text: string): string {
+  return text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[-']/g, ' ');
+}
+
+/**
+ * Commandes de construction du gilet : style de col, ajout / retrait / format / position des poches.
+ * Les couleurs et matières restent gérées par `parseCommand`.
+ */
+export function parseGarmentCommand(text: string): CommandPatch[] {
+  const t = ` ${normalize(text)} `;
+  const has = (pattern: RegExp) => pattern.test(t);
+  const patches: CommandPatch[] = [];
+  const removing = has(/\b(enleve|enlever|supprime|supprimer|retire|retirer|sans)\b/);
+
+  // Col
+  let collar: CollarStyle | null = null;
+  if (has(/\bcapuche\b/)) collar = removing ? 'montant' : 'capuche';
+  else if (has(/\bcol rond\b|\bcol ras du cou\b/)) collar = 'rond';
+  else if (has(/\bcol (en )?bords? cotes?\b/)) collar = 'bord_cote';
+  else if (has(/\bcol montant\b|\bcol droit\b/)) collar = 'montant';
+  if (collar) patches.push({ op: 'set_collar', style: collar });
+
+  // Poches (on ignore les demandes de patch ou logo « sur les poches »)
+  const aboutPockets = has(/\bpoches?\b|\bkangourou\b/) && !has(/\b(patch|logo|broderie|etiquette)\b/);
+  if (!aboutPockets) return patches;
+
+  let format: PocketFormat | undefined;
+  if (has(/\bkangourou\b/)) format = 'kangourou';
+  else if (has(/\bpoches? (de )?poitrine\b/)) format = 'poitrine';
+  else if (has(/\bpasse ?poil|\blaterales?\b|\bpoches? (en )?biais\b/)) format = 'passepoilee';
+  else if (has(/\bplaquees?\b/)) format = 'plaquee';
+
+  let side: PocketSide | undefined;
+  if (has(/\b(deux cotes|chaque cote|les deux|double|deux poches)\b/)) side = 'double';
+  else if (has(/\bgauche\b/)) side = 'gauche';
+  else if (has(/\bdroite\b/)) side = 'droite';
+  else if (has(/\b(centre|centree|centrees|milieu devant)\b/)) side = 'centre';
+
+  let level: PocketLevel | undefined;
+  if (has(/\b(en haut|plus haut|remonte|remonter|monte)\b/) || (has(/\bpoitrine\b/) && format !== 'poitrine')) level = 'poitrine';
+  else if (has(/\bau milieu\b|\bmi hauteur\b/)) level = 'milieu';
+  else if (has(/\b(en bas|plus bas|descend|descendre|baisse|baisser)\b/)) level = 'bas';
+
+  if (removing) {
+    patches.push({ op: 'remove_pockets' });
+  } else if (has(/\b(masque|masquer|cache|cacher)\b/)) {
+    patches.push({ op: 'show_pockets', visible: false });
+  } else if (has(/\b(ajoute|ajouter|rajoute|rajouter|mets une|met une|ajout)\b/)) {
+    const chosen = format ?? 'plaquee';
+    const defaults = pocketDefaults(chosen);
+    patches.push({
+      op: 'add_pocket',
+      format: chosen,
+      side: side ?? defaults.side ?? (chosen === 'poitrine' ? 'gauche' : 'double'),
+      level: level ?? defaults.level ?? 'bas',
+    });
+  } else if (has(/\b(affiche|afficher|montre|montrer|remets)\b/)) {
+    patches.push({ op: 'show_pockets', visible: true });
+  } else if (format || side || level) {
+    patches.push({ op: 'update_pockets', format, side, level });
+  }
+  return patches;
 }

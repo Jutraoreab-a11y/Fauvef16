@@ -5,6 +5,8 @@ import type { ChangeEvent, DragEvent, FormEvent } from 'react';
 import type { HexColor, ProductType } from '@/types/famal-spec';
 import { CHIPS, MATERIALS } from './data';
 import { GARMENTS, GARMENT_CATEGORIES } from './catalogue';
+import { ComponentEditors } from './ComponentEditors';
+import type { GarmentOptions } from './garment-options';
 import type {
   ChatMessage,
   PipelineStepState,
@@ -30,6 +32,7 @@ interface LeftPanelProps {
   onColorChange: (id: string, value: HexColor) => void;
   onMaterialChange: (id: string, material: (typeof MATERIALS)[number]) => void;
   onSliderChange: (id: string, value: number) => void;
+  onGarmentChange: (update: (current: GarmentOptions) => GarmentOptions) => void;
   onAssetRemove: (id: string) => void;
   onAssetKindChange: (id: string, kind: StudioAsset['kind']) => void;
   onAssetPlacementChange: (id: string, key: 'x' | 'y' | 'size', value: number) => void;
@@ -180,6 +183,7 @@ export function LeftPanel({
   onColorChange,
   onMaterialChange,
   onSliderChange,
+  onGarmentChange,
   onAssetRemove,
   onAssetKindChange,
   onAssetPlacementChange,
@@ -278,10 +282,21 @@ export function LeftPanel({
         </div>
       </section>
 
+      <ComponentEditors
+        spec={spec}
+        selected={selected}
+        onSelectZone={onSelectZone}
+        onGarmentChange={onGarmentChange}
+        onColorChange={onColorChange}
+        onMaterialChange={onMaterialChange}
+        onSliderChange={onSliderChange}
+      />
+
       <section className="block">
         <h2>Proportions</h2>
         <div id="sliders">
-          {spec.sliders.map((slider) => (
+          {/* La hauteur du col se règle dans le bloc « Col et poches ». */}
+          {spec.sliders.filter((slider) => !(spec.garment && slider.id === 'col_hauteur')).map((slider) => (
             <div className="slider" key={slider.id}>
               <label htmlFor={`slider-${slider.id}`}>
                 <span>{slider.label}</span>

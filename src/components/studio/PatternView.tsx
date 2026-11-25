@@ -1,7 +1,7 @@
 'use client';
 
 import type { ProductType } from '@/types/famal-spec';
-import { PATTERNS, PATTERN_VIEWBOX } from './patterns';
+import { PATTERNS, PATTERN_VIEWBOX, apparelPattern } from './patterns';
 import type { StudioSpec } from './types';
 
 interface PatternViewProps {
@@ -13,7 +13,7 @@ interface PatternViewProps {
 
 /** Vue « patron à plat » : chaque pièce est colorée avec la couleur de sa zone et sélectionne la zone au clic. */
 export default function PatternView({ type, spec, selected, onSelect }: PatternViewProps) {
-  const pieces = PATTERNS[type];
+  const pieces = type === 'apparel' ? apparelPattern(spec) : PATTERNS[type];
   const zones = spec.zones;
 
   return (
@@ -58,6 +58,7 @@ export default function PatternView({ type, spec, selected, onSelect }: PatternV
             <path
               key={index}
               {...common}
+              fillRule={piece.evenOdd ? 'evenodd' : undefined}
               fill={zone?.hex ?? '#888'}
               stroke={isSelected ? '#F5C542' : '#1f1f1f'}
               strokeWidth={isSelected ? 3 : 1.4}
